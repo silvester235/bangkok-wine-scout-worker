@@ -1,29 +1,67 @@
-import {
-	env,
-	createExecutionContext,
-	waitOnExecutionContext,
-	SELF,
-} from "cloudflare:test";
-import { describe, it, expect } from "vitest";
-import worker from "../src/index";
+import { SELF } from 'cloudflare:test';
+import { describe, expect, it } from 'vitest';
 
-// For now, you'll need to do something like this to get a correctly-typed
-// `Request` to pass to `worker.fetch()`.
-const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
+describe('Bangkok Wine Scout worker', () => {
+	it('returns the service status on GET /', async () => {
+		const response = await SELF.fetch('https://example.com/');
 
-describe("Hello World worker", () => {
-	it("responds with Hello World! (unit style)", async () => {
-		const request = new IncomingRequest("http://example.com");
-		// Create an empty context to pass to `worker.fetch()`.
-		const ctx = createExecutionContext();
-		const response = await worker.fetch(request, env, ctx);
-		// Wait for all `Promise`s passed to `ctx.waitUntil()` to settle before running test assertions
-		await waitOnExecutionContext(ctx);
-		expect(await response.text()).toMatchInlineSnapshot(`"Hello World!"`);
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe('Bangkok Wine Scout is running.');
 	});
 
-	it("responds with Hello World! (integration style)", async () => {
-		const response = await SELF.fetch("https://example.com");
-		expect(await response.text()).toMatchInlineSnapshot(`"Hello World!"`);
+	it('returns health information on GET /health', async () => {
+		const response = await SELF.fetch('https://example.com/health');
+		const body = await response.json<{
+			status: string;
+			service: string;
+			version: string;
+			timestamp: string;
+		}>();
+
+		expect(response.status).toBe(200);
+		expect(body.status).toBe('ok');
+		expect(body.service).toBe('Bangkok Wine Scout');
+		expect(body.version).toBe('0.1.0');
+		expect(Number.isNaN(Date.parse(body.timestamp))).toBe(false);
+	});
+
+	it('accepts valid JSON on POST /webhook', async () => {
+		const response = await SELF.fetch('https://example.com/webhook', {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+			},
+			body: JSON.stringify({
+				test: true,
+				message: 'Hello Bangkok Wine Scout',
+			}),
+		});
+		const body = await response.json<{ status: string; received: boolean }>();
+
+		expect(response.status).toBe(200);
+		expect(body.status).toBe('ok');
+		expect(body.received).toBe(true);
+	});
+
+	it('rejects invalid JSON on POST /webhook', async () => {
+		const response = await SELF.fetch('https://example.com/webhook', {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+			},
+			body: 'hello',
+		});
+		const body = await response.json<{ status: string; message: string }>();
+
+		expect(response.status).toBe(400);
+		expect(body.status).toBe('error');
+		expect(body.message).toBe('Invalid request body');
+	});
+
+	it('returns 404 for unknown routes', async () => {
+		const response = await SELF.fetch('https://example.com/unknown');
+
+		expect(response.status).toBe(404);
+		expect(await response.text()).toBe('Not found');
 	});
 });
