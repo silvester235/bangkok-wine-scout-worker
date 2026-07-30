@@ -16,6 +16,9 @@ export interface OcrResult {
 
 interface MoondreamResponse {
 	answer?: string | null;
+	result?: {
+		answer?: string | null;
+	};
 }
 
 function arrayBufferToBase64(content: ArrayBuffer): string {
@@ -64,7 +67,7 @@ export async function extractAndStoreOcr(
 			stream: false,
 		})) as MoondreamResponse;
 
-		const text = normalizeText(response.answer);
+		const text = normalizeText(response.result?.answer ?? response.answer);
 		const responseKeys =
 			response && typeof response === 'object' ? Object.keys(response as Record<string, unknown>) : [];
 
