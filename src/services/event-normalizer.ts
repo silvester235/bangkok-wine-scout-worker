@@ -68,18 +68,21 @@ function replaceCommonMojibake(value: string): string {
 export function normalizeUtf8Text(value: string | null): string | null {
 	if (!value) return value;
 
-	const directlyRepaired = replaceCommonMojibake(value);
-	if (directlyRepaired !== value || !MOJIBAKE_PATTERN.test(value)) return directlyRepaired;
+	const normalizedValue = value.normalize('NFC');
+	const directlyRepaired = replaceCommonMojibake(normalizedValue).normalize('NFC');
+	if (directlyRepaired !== normalizedValue || !MOJIBAKE_PATTERN.test(normalizedValue)) return directlyRepaired;
 
 	try {
 		const bytes: number[] = [];
-		for (const character of value) {
+		for (const character of normalizedValue) {
 			const byte = windows1252Byte(character);
 			if (byte === null) return directlyRepaired;
 			bytes.push(byte);
 		}
 
-		return new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(bytes));
+		return new TextDecoder('utf-8', { fatal: true })
+			.decode(new Uint8Array(bytes))
+			.normalize('NFC');
 	} catch {
 		return directlyRepaired;
 	}
@@ -93,11 +96,15 @@ function normalizePrice(price: string | null): number | null {
 
 function normalizeDate(value: string | null): string | null {
 	if (!value) return null;
+
 	const parsed = new Date(value);
-	if (!Number.isNaN(parsed.getTime())) {
-		return parsed.toISOString().slice(0, 10);
-	}
-	return value;
+	if (Number.isNaN(parsed.getTime())) return null;
+
+	const year = parsed.getUTCFullYear();
+	const currentYear = new Date().getUTCFullYear();
+	if (year < currentYear || year > currentYear + 2) return null;
+
+	return parsed.toISOString().slice(0, 10);
 }
 
 function extractEmail(value: string | null): string | null {
@@ -112,27 +119,48 @@ function extractPhone(value: string | null): string | null {
 	return match?.[0]?.trim() ?? null;
 }
 
+function firstEmail(values: Array<string | null>): string | null {
+	for (const value of values) {
+		const email = extractEmail(value);
+		if (email) return email;
+	}
+	return null;
+}
+
+function firstPhone(values: Array<string | null>): string | null {
+	for (const value of values) {
+		const phone = extractPhone(value);
+		if (phone) return phone;
+	}
+	return null;
+}
+
 export function normalizeWineEvent(event: {
 	isWineEvent: boolean;
 	date: string | null;
 	startTime: string | null;
 	price: string | null;
 	venue: string | null;
+	address: string | null;
 	contact: string | null;
 	bookingUrl: string | null;
+	notes: string[];
 	wines: string[];
 }): NormalizedWineEvent {
 	const venue = normalizeUtf8Text(event.venue);
 	const contact = normalizeUtf8Text(event.contact);
+	const address = normalizeUtf8Text(event.address);
 	const bookingUrl = normalizeUtf8Text(event.bookingUrl);
+	const notes = event.notes.map((note) => normalizeUtf8Text(note) ?? note);
+	const contactSources = [contact, address, bookingUrl, ...notes];
 
 	return {
 		date: normalizeDate(normalizeUtf8Text(event.date)),
 		startTime: normalizeUtf8Text(event.startTime),
 		priceTHB: normalizePrice(normalizeUtf8Text(event.price)),
 		venue,
-		contactEmail: extractEmail(contact) ?? extractEmail(bookingUrl),
-		contactPhone: extractPhone(contact),
+		contactEmail: firstEmail(contactSources),
+		contactPhone: firstPhone(contactSources),
 		wines: event.wines.map((wine) => normalizeUtf8Text(wine) ?? wine),
 		wineRegions: [],
 		isWineEvent: event.isWineEvent,
