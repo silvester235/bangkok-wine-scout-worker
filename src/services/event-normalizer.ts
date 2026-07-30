@@ -10,6 +10,25 @@ export interface NormalizedWineEvent {
 	isWineEvent: boolean;
 }
 
+const MOJIBAKE_PATTERN = /(?:Ã.|Â.|â.|ð.|ï¿½)/;
+
+/**
+ * Repairs text that was UTF-8 encoded but accidentally decoded as Latin-1.
+ * Correct Unicode text (including Thai) is returned unchanged.
+ */
+export function normalizeUtf8Text(value: string | null): string | null {
+	if (!value || !MOJIBAKE_PATTERN.test(value)) return value;
+
+	try {
+		const bytes = Uint8Array.from(value, (character) => character.charCodeAt(0));
+		const repaired = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+
+		return MOJIBAKE_PATTERN.test(repaired) ? value : repaired;
+	} catch {
+		return value;
+	}
+}
+
 function normalizePrice(price: string | null): number | null {
 	if (!price) return null;
 	const match = price.replace(/,/g, '').match(/\d+(?:\.\d+)?/);
@@ -47,14 +66,18 @@ export function normalizeWineEvent(event: {
 	bookingUrl: string | null;
 	wines: string[];
 }): NormalizedWineEvent {
+	const venue = normalizeUtf8Text(event.venue);
+	const contact = normalizeUtf8Text(event.contact);
+	const bookingUrl = normalizeUtf8Text(event.bookingUrl);
+
 	return {
-		date: normalizeDate(event.date),
-		startTime: event.startTime,
-		priceTHB: normalizePrice(event.price),
-		venue: event.venue,
-		contactEmail: extractEmail(event.contact) ?? extractEmail(event.bookingUrl),
-		contactPhone: extractPhone(event.contact),
-		wines: event.wines,
+		date: normalizeDate(normalizeUtf8Text(event.date)),
+		startTime: normalizeUtf8Text(event.startTime),
+		priceTHB: normalizePrice(normalizeUtf8Text(event.price)),
+		venue,
+		contactEmail: extractEmail(contact) ?? extractEmail(bookingUrl),
+		contactPhone: extractPhone(contact),
+		wines: event.wines.map((wine) => normalizeUtf8Text(wine) ?? wine),
 		wineRegions: [],
 		isWineEvent: event.isWineEvent,
 	};
