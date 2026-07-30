@@ -6,6 +6,7 @@ import {
 	pushToLine,
 	replyToLine,
 } from '../services/line';
+import { extractAndStoreOcr } from '../services/ocr';
 import type {
 	LineImageMessageEvent,
 	LineTextMessageEvent,
@@ -15,6 +16,7 @@ import type {
 interface Env {
 	LINE_CHANNEL_ACCESS_TOKEN: string;
 	EVENT_INTAKES: R2Bucket;
+	AI: Ai;
 }
 
 function isTextMessageEvent(event: unknown): event is LineTextMessageEvent {
@@ -60,12 +62,28 @@ async function processImageEvent(
 		content: downloaded.content,
 	});
 
+	let ocrStatus: 'completed' | 'failed' | 'skipped' = 'skipped';
+	let ocrCharacters = 0;
+
+	if (!asset.duplicate) {
+		const ocr = await extractAndStoreOcr(env.AI, env.EVENT_INTAKES, {
+			intakeId: asset.intakeId,
+			assetId: asset.assetId,
+			contentType: downloaded.contentType,
+			content: downloaded.content,
+		});
+		ocrStatus = ocr.status;
+		ocrCharacters = ocr.text.length;
+	}
+
 	console.log('LINE image intake completed', {
 		messageId: event.message.id,
 		intakeId: asset.intakeId,
 		assetId: asset.assetId,
 		contentHash: asset.contentHash,
 		duplicate: asset.duplicate,
+		ocrStatus,
+		ocrCharacters,
 	});
 
 	const target = getPushTarget(event);
@@ -76,9 +94,14 @@ async function processImageEvent(
 		return;
 	}
 
-	const finalText = asset.duplicate
-		? `Already received. Existing intake: ${asset.intakeId}`
-		: `Stored. Intake: ${asset.intakeId}`;
+	let finalText: string;
+	if (asset.duplicate) {
+		finalText = `Already received. Existing intake: ${asset.intakeId}`;
+	} else if (ocrStatus === 'completed') {
+		finalText = `Stored and OCR completed. Intake: ${asset.intakeId}`;
+	} else {
+		finalText = `Stored, but OCR failed. Intake: ${asset.intakeId}`;
+	}
 
 	await pushToLine(target, finalText, env.LINE_CHANNEL_ACCESS_TOKEN);
 }
