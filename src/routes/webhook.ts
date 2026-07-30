@@ -17,6 +17,13 @@ import type {
 	LineWebhookPayload,
 } from '../types/line';
 
+export interface ImageProcessingMessage {
+	messageId: string;
+	lineUserId?: string;
+	pushTarget?: string;
+	receivedAt: string;
+}
+
 function isTextMessageEvent(event: unknown): event is LineTextMessageEvent {
 	const candidate = event as LineTextMessageEvent;
 	return candidate?.type === 'message' && candidate.message?.type === 'text' && typeof candidate.replyToken === 'string';
@@ -31,18 +38,17 @@ function getPushTarget(event: LineImageMessageEvent): string | undefined {
 	return event.source?.userId ?? event.source?.groupId ?? event.source?.roomId;
 }
 
-async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): Promise<void> {
-	const downloaded = await downloadLineMessageContent(event.message.id, env.LINE_CHANNEL_ACCESS_TOKEN);
+export async function processImageMessage(message: ImageProcessingMessage, env: WorkerEnv): Promise<void> {
+	const downloaded = await downloadLineMessageContent(message.messageId, env.LINE_CHANNEL_ACCESS_TOKEN);
 	const asset = await storeLineImageAsset(env.EVENT_INTAKES, {
 		sourceType: 'line_image',
-		sourceReference: event.message.id,
-		lineUserId: event.source?.userId,
-		receivedAt: new Date(event.timestamp ?? Date.now()).toISOString(),
+		sourceReference: message.messageId,
+		lineUserId: message.lineUserId,
+		receivedAt: message.receivedAt,
 		contentType: downloaded.contentType,
 		content: downloaded.content,
 	});
 
-	let ocrStatus: 'completed' | 'failed' | 'skipped' = 'skipped';
 	let eventStatus: 'completed' | 'failed' | 'skipped' = 'skipped';
 	let eventTitle: string | null = null;
 
@@ -53,7 +59,6 @@ async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): 
 			contentType: downloaded.contentType,
 			content: downloaded.content,
 		});
-		ocrStatus = ocr.status;
 
 		if (ocr.status === 'completed') {
 			console.log('OCR TEXT:', ocr.text);
@@ -90,30 +95,35 @@ async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): 
 		}
 	}
 
-	const target = getPushTarget(event);
-	if (!target) return;
+	if (!message.pushTarget) return;
 	const finalText = asset.duplicate
 		? `Already received. Existing intake: ${asset.intakeId}`
 		: eventStatus === 'completed'
 			? `Stored, OCR completed, event extracted, and database updated: ${eventTitle}. Intake: ${asset.intakeId}`
-			: `Stored, but OCR failed. Intake: ${asset.intakeId}`;
-	await pushToLine(target, finalText, env.LINE_CHANNEL_ACCESS_TOKEN);
+			: `Stored, but OCR or event extraction failed. Intake: ${asset.intakeId}`;
+	await pushToLine(message.pushTarget, finalText, env.LINE_CHANNEL_ACCESS_TOKEN);
 }
 
-async function acknowledgeAndProcessImage(event: LineImageMessageEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
-	await replyToLine(event.replyToken, 'Image received – processing', env.LINE_CHANNEL_ACCESS_TOKEN);
-	ctx.waitUntil(processImageEvent(event, env));
+async function acknowledgeAndQueueImage(event: LineImageMessageEvent, env: WorkerEnv): Promise<void> {
+	await env.IMAGE_PROCESSING_QUEUE.send({
+		messageId: event.message.id,
+		lineUserId: event.source?.userId,
+		pushTarget: getPushTarget(event),
+		receivedAt: new Date(event.timestamp ?? Date.now()).toISOString(),
+	} satisfies ImageProcessingMessage);
+
+	await replyToLine(event.replyToken, 'Image received – queued for processing', env.LINE_CHANNEL_ACCESS_TOKEN);
 }
 
-async function processWebhookEvents(body: LineWebhookPayload, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
+async function processWebhookEvents(body: LineWebhookPayload, env: WorkerEnv): Promise<void> {
 	for (const event of body.events ?? []) {
-		if (isImageMessageEvent(event)) await acknowledgeAndProcessImage(event, env, ctx);
+		if (isImageMessageEvent(event)) await acknowledgeAndQueueImage(event, env);
 		else if (isTextMessageEvent(event)) await replyToLine(event.replyToken, routeCommand(event.message.text), env.LINE_CHANNEL_ACCESS_TOKEN);
 	}
 }
 
-export async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
+export async function handleWebhook(request: Request, env: WorkerEnv): Promise<Response> {
 	const body = (await request.json()) as LineWebhookPayload;
-	ctx.waitUntil(processWebhookEvents(body, env, ctx));
+	await processWebhookEvents(body, env);
 	return Response.json({ status: 'ok', received: true, service: APP_NAME, version: VERSION, timestamp: new Date().toISOString() });
 }
