@@ -129,7 +129,7 @@ export async function extractAndStoreEvent(
 				{
 					role: 'system',
 					content:
-						'Extract a wine event only from the supplied OCR transcription. Never infer facts that are not explicitly present. Use null or an empty array for missing information. Preserve original names and wording. Bangkok dates and times normally use Asia/Bangkok, but set timezone to null unless the text or location makes it reasonably clear.',
+						'Extract structured data only from the supplied OCR transcription. Treat the OCR text as the sole source of truth. Copy visible text exactly; do not correct, translate, paraphrase, autocomplete, reconstruct, or infer any character, word, name, domain, phone number, wine, venue, date, time, or price. Never use outside knowledge. For email addresses, URLs, phone numbers, venue names, and wine names, return a value only when every character is explicitly supported by the OCR text; otherwise return null or omit the uncertain item from the array. Do not replace .th with .uk or any other domain. Do not guess accented characters or spelling. Preserve original capitalization, punctuation, accents, spacing, and wording exactly as present in the OCR transcription. Use null or an empty array for missing or uncertain information. Set confidence lower whenever OCR text is unclear. Bangkok dates and times normally use Asia/Bangkok, but set timezone to null unless the text or location makes it reasonably clear.',
 				},
 				{
 					role: 'user',
