@@ -53,3 +53,28 @@ export async function replyToLine(
 		);
 	}
 }
+
+export async function pushToLine(
+	to: string,
+	text: string,
+	accessToken: string,
+): Promise<void> {
+	const response = await fetch('https://api.line.me/v2/bot/message/push', {
+		method: 'POST',
+		headers: {
+			Authorization: `Bearer ${accessToken}`,
+			'Content-Type': 'application/json',
+		},
+		body: JSON.stringify({
+			to,
+			messages: [{ type: 'text', text }],
+		}),
+	});
+
+	if (!response.ok) {
+		const errorBody = await response.text();
+		throw new Error(
+			`LINE Push API failed: ${response.status} ${errorBody}`,
+		);
+	}
+}
