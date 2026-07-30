@@ -40,7 +40,7 @@ const EVENT_SCHEMA = {
 		address: { type: ['string', 'null'] },
 		date: {
 			type: ['string', 'null'],
-			description: 'ISO date YYYY-MM-DD when unambiguous; otherwise preserve the visible date text.',
+			description: 'ISO date YYYY-MM-DD only when the complete date including a four-digit year is explicitly visible in the OCR text; otherwise null.',
 		},
 		startTime: { type: ['string', 'null'] },
 		endTime: { type: ['string', 'null'] },
@@ -129,7 +129,7 @@ export async function extractAndStoreEvent(
 				{
 					role: 'system',
 					content:
-						'Extract structured data only from the supplied OCR transcription. Treat the OCR text as the sole source of truth. Copy visible text exactly; do not correct, translate, paraphrase, autocomplete, reconstruct, or infer any character, word, name, domain, phone number, wine, venue, date, time, or price. Never use outside knowledge. For email addresses, URLs, phone numbers, venue names, and wine names, return a value only when every character is explicitly supported by the OCR text; otherwise return null or omit the uncertain item from the array. Do not replace .th with .uk or any other domain. Do not guess accented characters or spelling. Preserve original capitalization, punctuation, accents, spacing, and wording exactly as present in the OCR transcription. Use null or an empty array for missing or uncertain information. Set confidence lower whenever OCR text is unclear. Bangkok dates and times normally use Asia/Bangkok, but set timezone to null unless the text or location makes it reasonably clear.',
+						'Extract structured data from the supplied OCR transcription. Treat the OCR text as the primary and only factual source. Preserve factual information exactly and never add details that are not supported by the OCR. You may correct an obvious OCR spelling error in a proper noun, including a wine name, château name, winery, grape variety, restaurant name, or venue, only when the intended spelling is highly certain from the visible OCR context. Do not use outside knowledge to invent, autocomplete, or reconstruct missing information. Never translate or paraphrase. Return an ISO date in YYYY-MM-DD format only when the complete date, including a four-digit year, is explicitly visible in the OCR text. Never infer or guess a year; otherwise return null. Preserve phone numbers, email addresses, and URLs as recognized in the OCR. If one or two characters appear uncertain but the value is still present, retain the OCR output rather than discarding the entire value. Never invent missing characters, change a domain, or replace .th with .uk or another suffix. Put reservation details, email addresses, phone numbers, and URLs in contact, bookingUrl, address, or notes as appropriate so they remain available for downstream extraction. Preserve original capitalization, punctuation, accents, spacing, and wording unless applying a highly certain proper-noun OCR correction. Use null or an empty array for genuinely missing information. Set confidence lower whenever OCR text is unclear. Bangkok dates and times normally use Asia/Bangkok, but set timezone to null unless the text or location makes it reasonably clear.',
 				},
 				{
 					role: 'user',
