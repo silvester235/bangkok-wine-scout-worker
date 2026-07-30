@@ -1,3 +1,5 @@
+import { extractImageMetadata, type ExifMetadata, type ImageDimensions } from './image-metadata';
+
 export interface ImageIntakeRequest {
 	intakeId?: string;
 	sourceType: 'line_image';
@@ -19,6 +21,7 @@ export interface StoredImageAsset {
 }
 
 interface IntakeAssetMetadata {
+	schemaVersion: 2;
 	id: string;
 	intakeId: string;
 	sourceType: 'line_image';
@@ -27,8 +30,16 @@ interface IntakeAssetMetadata {
 	role: 'invitation' | 'menu' | 'wine_list' | 'other';
 	status: 'stored';
 	objectKey: string;
+	originalFilename: string | null;
+	originalFilenameAvailable: false;
 	contentType: string;
-	contentHash: string;
+	byteSize: number;
+	contentHash: {
+		algorithm: 'sha256';
+		value: string;
+	};
+	dimensions: ImageDimensions | null;
+	exif: ExifMetadata;
 	receivedAt: string;
 	storedAt: string;
 }
@@ -81,6 +92,8 @@ export async function storeLineImageAsset(
 		};
 	}
 
+	const imageMetadata = extractImageMetadata(request.content);
+	const byteSize = request.content.byteLength;
 	const intakeId = request.intakeId ?? buildDefaultIntakeId(request.sourceReference);
 	const assetId = buildAssetId(request.sourceReference);
 	const prefix = `intakes/${intakeId}/assets/${assetId}`;
@@ -95,10 +108,18 @@ export async function storeLineImageAsset(
 			sourceType: request.sourceType,
 			sourceReference: request.sourceReference,
 			contentHash,
+			byteSize: String(byteSize),
+			...(imageMetadata.dimensions
+				? {
+					width: String(imageMetadata.dimensions.width),
+					height: String(imageMetadata.dimensions.height),
+				}
+				: {}),
 		},
 	});
 
 	const metadata: IntakeAssetMetadata = {
+		schemaVersion: 2,
 		id: assetId,
 		intakeId,
 		sourceType: request.sourceType,
@@ -107,8 +128,16 @@ export async function storeLineImageAsset(
 		role: request.role ?? 'other',
 		status: 'stored',
 		objectKey,
+		originalFilename: null,
+		originalFilenameAvailable: false,
 		contentType: request.contentType,
-		contentHash,
+		byteSize,
+		contentHash: {
+			algorithm: 'sha256',
+			value: contentHash,
+		},
+		dimensions: imageMetadata.dimensions ?? null,
+		exif: imageMetadata.exif,
 		receivedAt: request.receivedAt,
 		storedAt: new Date().toISOString(),
 	};
@@ -121,6 +150,7 @@ export async function storeLineImageAsset(
 			status: metadata.status,
 			role: metadata.role,
 			contentHash,
+			byteSize: String(byteSize),
 		},
 	});
 
