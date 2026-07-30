@@ -4,7 +4,7 @@ import { handleWebhook } from './routes/webhook';
 import { notFoundResponse } from './utils/responses';
 
 export default {
-	async fetch(request): Promise<Response> {
+	async fetch(request, env): Promise<Response> {
 		const url = new URL(request.url);
 
 		if (request.method === 'GET' && url.pathname === '/') {
@@ -16,7 +16,7 @@ export default {
 		}
 
 		if (request.method === 'POST' && url.pathname === '/webhook') {
-			return handleWebhook(request);
+			return handleWebhook(request, env);
 		}
 
 		return notFoundResponse();
