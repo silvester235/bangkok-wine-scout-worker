@@ -1,19 +1,67 @@
 import { APP_NAME, VERSION } from '../config';
 import { routeCommand } from '../commands/router';
-import { replyToLine } from '../services/line';
-import type { WebhookPayload } from '../types/webhook';
+import { storeLineImageIntake } from '../services/event-intake';
+import {
+	downloadLineMessageContent,
+	replyToLine,
+} from '../services/line';
+import type {
+	LineImageMessageEvent,
+	LineTextMessageEvent,
+	LineWebhookPayload,
+} from '../types/line';
 
 interface Env {
 	LINE_CHANNEL_ACCESS_TOKEN: string;
+	EVENT_INTAKES: R2Bucket;
 }
 
-interface LineTextEvent {
-	type: 'message';
-	replyToken: string;
-	message: {
-		type: 'text';
-		text: string;
-	};
+function isTextMessageEvent(event: unknown): event is LineTextMessageEvent {
+	const candidate = event as LineTextMessageEvent;
+	return (
+		candidate?.type === 'message' &&
+		candidate.message?.type === 'text' &&
+		typeof candidate.replyToken === 'string'
+	);
+}
+
+function isImageMessageEvent(event: unknown): event is LineImageMessageEvent {
+	const candidate = event as LineImageMessageEvent;
+	return (
+		candidate?.type === 'message' &&
+		candidate.message?.type === 'image' &&
+		typeof candidate.message.id === 'string' &&
+		typeof candidate.replyToken === 'string'
+	);
+}
+
+async function handleImageEvent(
+	event: LineImageMessageEvent,
+	env: Env,
+): Promise<void> {
+	const downloaded = await downloadLineMessageContent(
+		event.message.id,
+		env.LINE_CHANNEL_ACCESS_TOKEN,
+	);
+
+	const intake = await storeLineImageIntake(env.EVENT_INTAKES, {
+		sourceType: 'line_image',
+		sourceReference: event.message.id,
+		lineUserId: event.source?.userId,
+		receivedAt: new Date(event.timestamp ?? Date.now()).toISOString(),
+		contentType: downloaded.contentType,
+		content: downloaded.content,
+	});
+
+	const replyText = intake.duplicate
+		? `This flyer was already received. Intake: ${intake.intakeId}`
+		: `Flyer received and stored for review. Intake: ${intake.intakeId}`;
+
+	await replyToLine(
+		event.replyToken,
+		replyText,
+		env.LINE_CHANNEL_ACCESS_TOKEN,
+	);
 }
 
 export async function handleWebhook(
@@ -21,22 +69,18 @@ export async function handleWebhook(
 	env: Env,
 ): Promise<Response> {
 	try {
-		const body = (await request.json()) as WebhookPayload;
-
-		console.log(JSON.stringify(body, null, 2));
+		const body = (await request.json()) as LineWebhookPayload;
 
 		for (const event of body.events ?? []) {
-			const lineEvent = event as LineTextEvent;
+			if (isImageMessageEvent(event)) {
+				await handleImageEvent(event, env);
+				continue;
+			}
 
-			if (
-				lineEvent.type === 'message' &&
-				lineEvent.message?.type === 'text' &&
-				lineEvent.replyToken
-			) {
-				const replyText = routeCommand(lineEvent.message.text);
-
+			if (isTextMessageEvent(event)) {
+				const replyText = routeCommand(event.message.text);
 				await replyToLine(
-					lineEvent.replyToken,
+					event.replyToken,
 					replyText,
 					env.LINE_CHANNEL_ACCESS_TOKEN,
 				);
@@ -61,9 +105,7 @@ export async function handleWebhook(
 				version: VERSION,
 				timestamp: new Date().toISOString(),
 			},
-			{
-				status: 500,
-			},
+			{ status: 500 },
 		);
 	}
 }
