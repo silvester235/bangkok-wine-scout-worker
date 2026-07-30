@@ -141,11 +141,7 @@ export async function extractAndStoreEvent(
 			stream: false,
 			response_format: {
 				type: 'json_schema',
-				json_schema: {
-					name: 'wine_event',
-					strict: true,
-					schema: EVENT_SCHEMA,
-				},
+				json_schema: EVENT_SCHEMA,
 			},
 		} as never)) as unknown;
 
