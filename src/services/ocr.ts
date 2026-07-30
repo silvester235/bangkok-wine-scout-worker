@@ -10,6 +10,8 @@ export interface OcrResult {
 	text: string;
 	processedAt: string;
 	error?: string;
+	responseKeys?: string[];
+	rawResponse?: unknown;
 }
 
 interface MoondreamResponse {
@@ -62,15 +64,26 @@ export async function extractAndStoreOcr(
 			stream: false,
 		})) as MoondreamResponse;
 
+		const text = normalizeText(response.answer);
+		const responseKeys =
+			response && typeof response === 'object' ? Object.keys(response as Record<string, unknown>) : [];
+
 		const result: OcrResult = {
 			schemaVersion: 1,
-			status: 'completed',
+			status: text ? 'completed' : 'failed',
 			intakeId: input.intakeId,
 			assetId: input.assetId,
 			model: OCR_MODEL,
 			languageHint: 'auto',
-			text: normalizeText(response.answer),
+			text,
 			processedAt,
+			...(text
+				? {}
+				: {
+						error: 'Workers AI returned no OCR text.',
+						responseKeys,
+						rawResponse: response,
+					}),
 		};
 
 		await bucket.put(ocrKey, JSON.stringify(result, null, 2), {
