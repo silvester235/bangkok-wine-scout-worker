@@ -9,7 +9,7 @@ The MVP processes events from two source types:
 1. Flyers or images sent through LINE
 2. Event pages discovered on websites
 
-Both source types will eventually use the same event-processing pipeline.
+All source types converge on one source-independent event pipeline. LINE and website integrations are adapters; they do not own event business logic.
 
 ## Current architecture
 
@@ -33,69 +33,250 @@ Command router
 LINE reply service
 ```
 
+The current implementation covers text commands. Event processing begins with the next milestone: LINE image intake.
+
 ## Target event pipeline
 
 ```text
-LINE flyer / website event
-          |
-          v
-    Intake service
-          |
-          +--------> Cloudflare R2 (original image)
-          |
-          v
-    AI extraction
-          |
-          v
-   Draft event record
-          |
-          v
-    Review dashboard
-     |      |      |
-  Publish  Edit  Ignore
-          |
-          v
-      Cloudflare D1
-          |
-          v
-      Website / LINE
+LINE image / event link / website discovery
+                    |
+                    v
+             1. Source adapter
+                    |
+                    v
+              2. Intake record
+               /           \
+              v             v
+     R2 source object     D1 metadata
+              \             /
+               v           v
+              3. Extraction
+                    |
+                    v
+             4. Normalization
+                    |
+                    v
+          5. Validation and scoring
+                    |
+                    v
+          6. Duplicate candidate search
+                    |
+                    v
+              7. Draft event
+                    |
+                    v
+              8. Human review
+             /        |        \
+            v         v         v
+         Publish     Edit      Ignore
+            |
+            v
+       9. Published event
+            |
+            v
+       Website / LINE search
 ```
+
+## Pipeline stages
+
+### 1. Source adapter
+
+A source adapter converts provider-specific input into a shared intake request.
+
+Examples:
+
+- LINE image message
+- LINE text containing an event URL
+- Website crawler result
+- Manual dashboard submission
+
+Adapters may authenticate requests, fetch provider content, and capture source metadata. They must not extract or publish events.
+
+### 2. Intake
+
+The intake service creates an `event_intakes` record before expensive processing begins.
+
+Responsibilities:
+
+- Generate an internal intake ID
+- Record source type and source reference
+- Preserve the original URL or submitted text
+- Store original image bytes in R2 when applicable
+- Record MIME type, object key, and optional content hash
+- Make repeated delivery idempotent where a stable source reference exists
+- Move the intake from `received` to `stored`
+
+A successful LINE acknowledgement means the source was accepted and stored. It does not mean the event was extracted, approved, or published.
+
+### 3. Extraction
+
+The extraction service reads preserved source material and produces a provider-neutral structured proposal.
+
+Typical fields:
+
+- Event title
+- Date and start time
+- End time
+- Venue and address
+- Organizer
+- Price and currency
+- Description
+- Booking URL
+- Contact details
+
+The raw AI or parser response is stored unchanged for troubleshooting and later reprocessing.
+
+### 4. Normalization
+
+Normalization converts extracted values into canonical event fields without inventing missing information.
+
+Examples:
+
+- Convert Thai and English date expressions to ISO 8601
+- Apply `Asia/Bangkok` as the default timezone
+- Normalize currency codes to ISO values such as `THB`
+- Separate numeric price from original wording
+- Normalize URLs and whitespace
+- Preserve source wording alongside normalized values where meaning could be lost
+
+Normalization is deterministic and independent of the AI provider.
+
+### 5. Validation and confidence
+
+Validation checks whether the proposal is usable and identifies fields requiring review.
+
+Checks include:
+
+- Required title is present
+- Date and time are parseable
+- End time is not before start time
+- Price values are plausible
+- URLs are syntactically valid
+- Published dates are not silently inferred from unrelated flyer text
+
+The pipeline records overall confidence and may record field-level confidence with source evidence. Low confidence never causes automatic publication.
+
+### 6. Duplicate candidate search
+
+Duplicate detection compares the proposed event with existing drafts and published events.
+
+Signals include:
+
+- Normalized title similarity
+- Same or nearby start time
+- Same venue
+- Same booking or source URL
+- Matching source reference
+- Matching image hash
+
+The pipeline records possible matches for review. It does not automatically delete or merge records during the MVP.
+
+### 7. Draft event
+
+A successful pipeline run creates or updates one canonical draft event linked to its intake.
+
+The draft contains normalized fields, review flags, confidence data, and duplicate candidates. Reprocessing the same intake updates the draft rather than creating uncontrolled copies.
+
+### 8. Human review
+
+The review dashboard presents the original source beside the structured draft.
+
+Allowed decisions:
+
+- Edit fields
+- Publish
+- Ignore
+- Mark a published event as cancelled or sold out
+- Re-run extraction after a processing failure or model improvement
+
+AI extraction is advisory. A human review decision is the publication boundary.
+
+### 9. Publication
+
+Publication changes an approved event to `published` and records `published_at`.
+
+Published events become available to public consumers such as the website and LINE event search. Publication does not overwrite the original source, raw extraction, or review history.
+
+## Processing states
+
+### Intake states
+
+```text
+received -> stored -> analysing -> ready_for_review
+                    \-> failed
+ready_for_review -> ignored
+failed -> analysing
+```
+
+### Event states
+
+```text
+draft -> needs_review -> published
+   |          |
+   +----------+-> ignored
+published -> sold_out
+published -> cancelled
+```
+
+State changes must be explicit and validated. Invalid transitions return a conflict rather than silently changing data.
+
+## Reliability rules
+
+- Webhook handlers finish quickly and delegate expensive processing.
+- Each stage has a clear input and output contract.
+- Intake creation is idempotent for stable source references.
+- Original source material is immutable after storage.
+- A failed stage preserves enough metadata to retry safely.
+- Reprocessing must not create duplicate draft events for the same intake.
+- Provider-specific retries belong inside provider services.
+- Logs include intake and event IDs but never secrets or unnecessary personal data.
 
 ## Main components
 
 ### Webhook
 
-Receives LINE events, verifies requests, and delegates work. It must not contain business logic.
+Receives LINE events, verifies requests, and delegates work. It must not contain event business logic.
 
 ### Command router
 
-Routes text commands to dedicated command handlers.
+Routes text commands to dedicated command handlers. Event images and links bypass the text-command path and enter the intake adapter.
 
 ### Event intake service
 
-Accepts flyers, images, event links, and future website discoveries. It creates an intake record before analysis begins.
+Creates durable intake records and preserves original source material before analysis.
 
-### R2 image storage
+### R2 source storage
 
-Stores the original event flyer or image. D1 stores only the R2 object key and metadata.
+Stores original event flyers and future source artifacts. D1 stores object keys, hashes, and metadata rather than binary blobs.
 
-### AI extraction service
+### Extraction service
 
-Extracts structured event information such as title, date, time, venue, price, organiser, description, and booking link. It also records confidence information and the original AI output for review.
+Coordinates AI and parser providers and returns a shared extraction result. Provider-specific response formats remain inside adapters.
+
+### Normalization and validation services
+
+Convert extracted values into canonical event fields, validate them, and produce review flags and confidence metadata.
+
+### Duplicate service
+
+Finds likely matches using multiple signals and returns candidates for human review.
 
 ### Review dashboard
 
-Allows an administrator to publish, edit, or ignore proposed events.
+Allows an administrator to inspect source evidence, edit fields, publish, ignore, cancel, mark sold out, or retry processing.
 
 ### D1 database
 
-Stores event records, source information, review status, and processing metadata.
+Stores intakes, canonical events, confidence data, duplicate candidates, and processing metadata.
 
 ## Architectural boundaries
 
 - LINE-specific code stays inside LINE adapters and services.
-- Event business logic is independent of LINE and website sources.
+- Website-specific code stays inside website adapters and collectors.
+- Event business logic is independent of source and provider.
 - Original images live in R2, not D1.
+- D1 is the system of record for workflow state and canonical event data.
 - Only reviewed events may be published.
 - AI output is treated as a proposal, never as authoritative data.
+- Public consumers read published events, not raw intakes or unreviewed drafts.
 - Bottle recognition and cellar management are outside the current scope.
