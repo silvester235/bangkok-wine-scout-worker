@@ -3,4 +3,5 @@ export interface WorkerEnv {
 	EVENT_INTAKES: R2Bucket;
 	DB: D1Database;
 	AI: Ai;
+	IMAGE_PROCESSING_QUEUE: Queue;
 }
