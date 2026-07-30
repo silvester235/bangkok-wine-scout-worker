@@ -80,7 +80,10 @@ export function normalizeUtf8Text(value: string | null): string | null {
 			bytes.push(byte);
 		}
 
-		return new TextDecoder('utf-8', { fatal: true })
+		return new TextDecoder('utf-8', {
+	fatal: true,
+	ignoreBOM: false,
+})
 			.decode(new Uint8Array(bytes))
 			.normalize('NFC');
 	} catch {
