@@ -1,3 +1,34 @@
+export interface LineMessageContent {
+	content: ArrayBuffer;
+	contentType: string;
+}
+
+export async function downloadLineMessageContent(
+	messageId: string,
+	accessToken: string,
+): Promise<LineMessageContent> {
+	const response = await fetch(
+		`https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`,
+		{
+			headers: {
+				Authorization: `Bearer ${accessToken}`,
+			},
+		},
+	);
+
+	if (!response.ok) {
+		const errorBody = await response.text();
+		throw new Error(
+			`LINE Content API failed: ${response.status} ${errorBody}`,
+		);
+	}
+
+	return {
+		content: await response.arrayBuffer(),
+		contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+	};
+}
+
 export async function replyToLine(
 	replyToken: string,
 	text: string,
