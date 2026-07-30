@@ -1,7 +1,7 @@
 import { APP_NAME, VERSION } from '../config';
 import { routeCommand } from '../commands/router';
 import { extractAndStoreEvent } from '../services/event-extraction';
-import { normalizeWineEvent } from '../services/event-normalizer';
+import { normalizeUtf8Text, normalizeWineEvent } from '../services/event-normalizer';
 import { saveWineEvent } from '../services/event-repository';
 import { storeLineImageAsset } from '../services/event-intake';
 import {
@@ -62,7 +62,7 @@ async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): 
 				ocrText: ocr.text,
 			});
 			eventStatus = extraction.status;
-			eventTitle = extraction.event?.title ?? null;
+			eventTitle = normalizeUtf8Text(extraction.event?.title ?? null);
 
 			if (extraction.event) {
 				const normalizedEvent = normalizeWineEvent(extraction.event);
@@ -76,7 +76,7 @@ async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): 
 				await saveWineEvent(env.DB, {
 					intakeId: asset.intakeId,
 					assetId: asset.assetId,
-					title: extraction.event.title,
+					title: eventTitle,
 					event: normalizedEvent,
 				});
 			}
