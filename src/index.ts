@@ -1,3 +1,4 @@
+import { handleEvents } from './routes/events';
 import { handleHealth } from './routes/health';
 import { handleHome } from './routes/home';
 import { handleWebhook } from './routes/webhook';
@@ -14,6 +15,10 @@ export default {
 
 		if (request.method === 'GET' && url.pathname === '/health') {
 			return handleHealth();
+		}
+
+		if (request.method === 'GET' && url.pathname === '/api/events') {
+			return handleEvents(env);
 		}
 
 		if (request.method === 'POST' && url.pathname === '/webhook') {
