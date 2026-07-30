@@ -17,6 +17,22 @@
 	"ai": {
 		"binding": "AI"
 	},
+	"queues": {
+		"producers": [
+			{
+				"queue": "bangkok-wine-scout-processing",
+				"binding": "IMAGE_PROCESSING_QUEUE"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "bangkok-wine-scout-processing",
+				"max_batch_size": 1,
+				"max_batch_timeout": 1,
+				"max_retries": 3
+			}
+		]
+	},
 	"r2_buckets": [
 		{
 			"binding": "EVENT_INTAKES",
