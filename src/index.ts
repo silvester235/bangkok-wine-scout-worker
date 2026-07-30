@@ -1,10 +1,11 @@
 import { handleHealth } from './routes/health';
 import { handleHome } from './routes/home';
 import { handleWebhook } from './routes/webhook';
+import type { WorkerEnv } from './types/env';
 import { notFoundResponse } from './utils/responses';
 
 export default {
-	async fetch(request, env, ctx): Promise<Response> {
+	async fetch(request, env: WorkerEnv, ctx): Promise<Response> {
 		const url = new URL(request.url);
 
 		if (request.method === 'GET' && url.pathname === '/') {
@@ -21,4 +22,4 @@ export default {
 
 		return notFoundResponse();
 	},
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<WorkerEnv>;
