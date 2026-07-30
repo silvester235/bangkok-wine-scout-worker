@@ -3,6 +3,7 @@ import { routeCommand } from '../commands/router';
 import { storeLineImageAsset } from '../services/event-intake';
 import {
 	downloadLineMessageContent,
+	pushToLine,
 	replyToLine,
 } from '../services/line';
 import type {
@@ -35,7 +36,11 @@ function isImageMessageEvent(event: unknown): event is LineImageMessageEvent {
 	);
 }
 
-async function handleImageEvent(
+function getPushTarget(event: LineImageMessageEvent): string | undefined {
+	return event.source?.userId ?? event.source?.groupId ?? event.source?.roomId;
+}
+
+async function processImageEvent(
 	event: LineImageMessageEvent,
 	env: Env,
 ): Promise<void> {
@@ -55,31 +60,68 @@ async function handleImageEvent(
 		content: downloaded.content,
 	});
 
-	console.log('LINE image intake stored', {
+	console.log('LINE image intake completed', {
 		messageId: event.message.id,
 		intakeId: asset.intakeId,
 		assetId: asset.assetId,
+		contentHash: asset.contentHash,
 		duplicate: asset.duplicate,
 	});
 
-	const replyText = asset.duplicate
-		? `This flyer was already received. Intake: ${asset.intakeId}`
-		: `Flyer received and stored for review. Intake: ${asset.intakeId}`;
+	const target = getPushTarget(event);
+	if (!target) {
+		console.warn('LINE image final status not sent: no push target', {
+			messageId: event.message.id,
+		});
+		return;
+	}
 
+	const finalText = asset.duplicate
+		? `Already received. Existing intake: ${asset.intakeId}`
+		: `Stored. Intake: ${asset.intakeId}`;
+
+	await pushToLine(target, finalText, env.LINE_CHANNEL_ACCESS_TOKEN);
+}
+
+async function acknowledgeAndProcessImage(
+	event: LineImageMessageEvent,
+	env: Env,
+	ctx: ExecutionContext,
+): Promise<void> {
 	await replyToLine(
 		event.replyToken,
-		replyText,
+		'Image received – processing',
 		env.LINE_CHANNEL_ACCESS_TOKEN,
+	);
+
+	ctx.waitUntil(
+		processImageEvent(event, env).catch(async (error) => {
+			console.error('LINE image processing failed:', error);
+
+			const target = getPushTarget(event);
+			if (!target) return;
+
+			try {
+				await pushToLine(
+					target,
+					'Image processing failed. Please try again.',
+					env.LINE_CHANNEL_ACCESS_TOKEN,
+				);
+			} catch (pushError) {
+				console.error('LINE failure notification failed:', pushError);
+			}
+		}),
 	);
 }
 
 async function processWebhookEvents(
 	body: LineWebhookPayload,
 	env: Env,
+	ctx: ExecutionContext,
 ): Promise<void> {
 	for (const event of body.events ?? []) {
 		if (isImageMessageEvent(event)) {
-			await handleImageEvent(event, env);
+			await acknowledgeAndProcessImage(event, env, ctx);
 			continue;
 		}
 
@@ -103,7 +145,7 @@ export async function handleWebhook(
 		const body = (await request.json()) as LineWebhookPayload;
 
 		ctx.waitUntil(
-			processWebhookEvents(body, env).catch((error) => {
+			processWebhookEvents(body, env, ctx).catch((error) => {
 				console.error('Webhook background processing failed:', error);
 			}),
 		);
