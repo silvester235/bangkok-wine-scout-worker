@@ -1,6 +1,6 @@
 import { APP_NAME, VERSION } from '../config';
 import { routeCommand } from '../commands/router';
-import { storeLineImageIntake } from '../services/event-intake';
+import { storeLineImageAsset } from '../services/event-intake';
 import {
 	downloadLineMessageContent,
 	replyToLine,
@@ -44,7 +44,7 @@ async function handleImageEvent(
 		env.LINE_CHANNEL_ACCESS_TOKEN,
 	);
 
-	const intake = await storeLineImageIntake(env.EVENT_INTAKES, {
+	const asset = await storeLineImageAsset(env.EVENT_INTAKES, {
 		sourceType: 'line_image',
 		sourceReference: event.message.id,
 		lineUserId: event.source?.userId,
@@ -53,9 +53,9 @@ async function handleImageEvent(
 		content: downloaded.content,
 	});
 
-	const replyText = intake.duplicate
-		? `This flyer was already received. Intake: ${intake.intakeId}`
-		: `Flyer received and stored for review. Intake: ${intake.intakeId}`;
+	const replyText = asset.duplicate
+		? `This flyer was already received. Intake: ${asset.intakeId}`
+		: `Flyer received and stored for review. Intake: ${asset.intakeId}`;
 
 	await replyToLine(
 		event.replyToken,
