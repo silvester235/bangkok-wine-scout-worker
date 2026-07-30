@@ -56,6 +56,8 @@ async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): 
 		ocrStatus = ocr.status;
 
 		if (ocr.status === 'completed') {
+			console.log('OCR TEXT:', ocr.text);
+
 			const extraction = await extractAndStoreEvent(env.AI, env.EVENT_INTAKES, {
 				intakeId: asset.intakeId,
 				assetId: asset.assetId,
@@ -63,6 +65,8 @@ async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): 
 			});
 			eventStatus = extraction.status;
 			eventTitle = normalizeUtf8Text(extraction.event?.title ?? null);
+
+			console.log('EXTRACTED EVENT:', JSON.stringify(extraction.event));
 
 			if (extraction.event) {
 				const normalizedEvent = normalizeWineEvent(extraction.event);
