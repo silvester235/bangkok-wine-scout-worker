@@ -45,8 +45,7 @@ export function normalizeUtf8Text(value: string | null): string | null {
 			bytes.push(byte);
 		}
 
-		const repaired = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(bytes));
-		return MOJIBAKE_PATTERN.test(repaired) ? value : repaired;
+		return new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(bytes));
 	} catch {
 		return value;
 	}
