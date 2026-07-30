@@ -1,3 +1,5 @@
+import { normalizeWineEntities, type NormalizedWineEntity } from './wine-normalizer';
+
 export interface NormalizedWineEvent {
 	date: string | null;
 	startTime: string | null;
@@ -5,7 +7,7 @@ export interface NormalizedWineEvent {
 	venue: string | null;
 	contactEmail: string | null;
 	contactPhone: string | null;
-	wines: string[];
+	wines: NormalizedWineEntity[];
 	wineRegions: string[];
 	isWineEvent: boolean;
 }
@@ -54,7 +56,7 @@ export function normalizeWineEvent(event: {
 		venue: event.venue,
 		contactEmail: extractEmail(event.contact) ?? extractEmail(event.bookingUrl),
 		contactPhone: extractPhone(event.contact),
-		wines: event.wines,
+		wines: normalizeWineEntities(event.wines),
 		wineRegions: [],
 		isWineEvent: event.isWineEvent,
 	};
