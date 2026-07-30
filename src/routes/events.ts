@@ -45,6 +45,8 @@ export async function handleEvents(env: WorkerEnv): Promise<Response> {
 		ORDER BY created_at DESC`,
 	).all<EventRow>();
 
+	console.log('RAW TITLE FROM D1:', result.results?.[0]?.title);
+	
 	const events = (result.results ?? []).map((row) => ({
 		id: row.id,
 		intakeId: row.intake_id,
