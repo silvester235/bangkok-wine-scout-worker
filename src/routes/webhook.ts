@@ -67,6 +67,9 @@ async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): 
 			if (extraction.event) {
 				const normalizedEvent = normalizeWineEvent(extraction.event);
 
+				console.log('RAW WINES:', JSON.stringify(extraction.event.wines));
+				console.log('NORMALIZED WINES:', JSON.stringify(normalizedEvent.wines));
+
 				await env.EVENT_INTAKES.put(
 					`intakes/${asset.intakeId}/assets/${asset.assetId}/event-normalized.json`,
 					JSON.stringify(normalizedEvent, null, 2),
