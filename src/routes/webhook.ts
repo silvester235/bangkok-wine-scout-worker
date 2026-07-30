@@ -2,6 +2,7 @@ import { APP_NAME, VERSION } from '../config';
 import { routeCommand } from '../commands/router';
 import { extractAndStoreEvent } from '../services/event-extraction';
 import { normalizeWineEvent } from '../services/event-normalizer';
+import { saveWineEvent } from '../services/event-repository';
 import { storeLineImageAsset } from '../services/event-intake';
 import {
 	downloadLineMessageContent,
@@ -64,11 +65,20 @@ async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): 
 			eventTitle = extraction.event?.title ?? null;
 
 			if (extraction.event) {
+				const normalizedEvent = normalizeWineEvent(extraction.event);
+
 				await env.EVENT_INTAKES.put(
 					`intakes/${asset.intakeId}/assets/${asset.assetId}/event-normalized.json`,
-					JSON.stringify(normalizeWineEvent(extraction.event), null, 2),
+					JSON.stringify(normalizedEvent, null, 2),
 					{ httpMetadata: { contentType: 'application/json' } },
 				);
+
+				await saveWineEvent(env.EVENTS_DB, {
+					intakeId: asset.intakeId,
+					assetId: asset.assetId,
+					title: extraction.event.title,
+					event: normalizedEvent,
+				});
 			}
 		}
 	}
@@ -78,7 +88,7 @@ async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): 
 	const finalText = asset.duplicate
 		? `Already received. Existing intake: ${asset.intakeId}`
 		: eventStatus === 'completed'
-			? `Stored, OCR completed, and event extracted: ${eventTitle}. Intake: ${asset.intakeId}`
+			? `Stored, OCR completed, event extracted, and database updated: ${eventTitle}. Intake: ${asset.intakeId}`
 			: `Stored, but OCR failed. Intake: ${asset.intakeId}`;
 	await pushToLine(target, finalText, env.LINE_CHANNEL_ACCESS_TOKEN);
 }
