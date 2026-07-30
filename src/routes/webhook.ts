@@ -49,59 +49,69 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 		content: downloaded.content,
 	});
 
+	// Queue delivery is at-least-once. A duplicate means this image has already
+	// entered the pipeline, so it must not generate another user notification.
+	if (asset.duplicate) {
+		console.log('DUPLICATE IMAGE MESSAGE SKIPPED:', message.messageId, asset.intakeId);
+		return;
+	}
+
 	let eventStatus: 'completed' | 'failed' | 'skipped' = 'skipped';
 	let eventTitle: string | null = null;
 
-	if (!asset.duplicate) {
-		const ocr = await extractAndStoreOcr(env.AI, env.EVENT_INTAKES, {
+	const ocr = await extractAndStoreOcr(env.AI, env.EVENT_INTAKES, {
+		intakeId: asset.intakeId,
+		assetId: asset.assetId,
+		contentType: downloaded.contentType,
+		content: downloaded.content,
+	});
+
+	if (ocr.status === 'completed') {
+		console.log('OCR TEXT:', ocr.text);
+
+		const extraction = await extractAndStoreEvent(env.AI, env.EVENT_INTAKES, {
 			intakeId: asset.intakeId,
 			assetId: asset.assetId,
-			contentType: downloaded.contentType,
-			content: downloaded.content,
+			ocrText: ocr.text,
 		});
+		eventStatus = extraction.status;
+		eventTitle = normalizeUtf8Text(extraction.event?.title ?? null);
 
-		if (ocr.status === 'completed') {
-			console.log('OCR TEXT:', ocr.text);
+		console.log('EXTRACTED EVENT:', JSON.stringify(extraction.event));
 
-			const extraction = await extractAndStoreEvent(env.AI, env.EVENT_INTAKES, {
+		if (extraction.event) {
+			const normalizedEvent = normalizeWineEvent(extraction.event);
+
+			console.log('RAW WINES:', JSON.stringify(extraction.event.wines));
+			console.log('NORMALIZED WINES:', JSON.stringify(normalizedEvent.wines));
+
+			await env.EVENT_INTAKES.put(
+				`intakes/${asset.intakeId}/assets/${asset.assetId}/event-normalized.json`,
+				JSON.stringify(normalizedEvent, null, 2),
+				{ httpMetadata: { contentType: 'application/json' } },
+			);
+
+			await saveWineEvent(env.DB, {
 				intakeId: asset.intakeId,
 				assetId: asset.assetId,
-				ocrText: ocr.text,
+				title: eventTitle,
+				event: normalizedEvent,
 			});
-			eventStatus = extraction.status;
-			eventTitle = normalizeUtf8Text(extraction.event?.title ?? null);
-
-			console.log('EXTRACTED EVENT:', JSON.stringify(extraction.event));
-
-			if (extraction.event) {
-				const normalizedEvent = normalizeWineEvent(extraction.event);
-
-				console.log('RAW WINES:', JSON.stringify(extraction.event.wines));
-				console.log('NORMALIZED WINES:', JSON.stringify(normalizedEvent.wines));
-
-				await env.EVENT_INTAKES.put(
-					`intakes/${asset.intakeId}/assets/${asset.assetId}/event-normalized.json`,
-					JSON.stringify(normalizedEvent, null, 2),
-					{ httpMetadata: { contentType: 'application/json' } },
-				);
-
-				await saveWineEvent(env.DB, {
-					intakeId: asset.intakeId,
-					assetId: asset.assetId,
-					title: eventTitle,
-					event: normalizedEvent,
-				});
-			}
 		}
 	}
 
 	if (!message.pushTarget) return;
-	const finalText = asset.duplicate
-		? `Already received. Existing intake: ${asset.intakeId}`
-		: eventStatus === 'completed'
-			? `Stored, OCR completed, event extracted, and database updated: ${eventTitle}. Intake: ${asset.intakeId}`
-			: `Stored, but OCR or event extraction failed. Intake: ${asset.intakeId}`;
-	await pushToLine(message.pushTarget, finalText, env.LINE_CHANNEL_ACCESS_TOKEN);
+	const finalText = eventStatus === 'completed'
+		? `Stored, OCR completed, event extracted, and database updated: ${eventTitle}. Intake: ${asset.intakeId}`
+		: `Stored, but OCR or event extraction failed. Intake: ${asset.intakeId}`;
+
+	// The status notification is best-effort. A LINE API error must not cause
+	// Cloudflare Queues to process the completed intake again.
+	try {
+		await pushToLine(message.pushTarget, finalText, env.LINE_CHANNEL_ACCESS_TOKEN);
+	} catch (error) {
+		console.error('LINE STATUS PUSH FAILED:', error);
+	}
 }
 
 async function acknowledgeAndQueueImage(event: LineImageMessageEvent, env: WorkerEnv): Promise<void> {
