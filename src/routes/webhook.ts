@@ -73,7 +73,7 @@ async function processImageEvent(event: LineImageMessageEvent, env: WorkerEnv): 
 					{ httpMetadata: { contentType: 'application/json' } },
 				);
 
-				await saveWineEvent(env.EVENTS_DB, {
+				await saveWineEvent(env.DB, {
 					intakeId: asset.intakeId,
 					assetId: asset.assetId,
 					title: extraction.event.title,
