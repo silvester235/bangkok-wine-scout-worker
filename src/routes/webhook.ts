@@ -39,6 +39,8 @@ async function handleImageEvent(
 	event: LineImageMessageEvent,
 	env: Env,
 ): Promise<void> {
+	console.log('LINE image intake started', { messageId: event.message.id });
+
 	const downloaded = await downloadLineMessageContent(
 		event.message.id,
 		env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -53,6 +55,13 @@ async function handleImageEvent(
 		content: downloaded.content,
 	});
 
+	console.log('LINE image intake stored', {
+		messageId: event.message.id,
+		intakeId: asset.intakeId,
+		assetId: asset.assetId,
+		duplicate: asset.duplicate,
+	});
+
 	const replyText = asset.duplicate
 		? `This flyer was already received. Intake: ${asset.intakeId}`
 		: `Flyer received and stored for review. Intake: ${asset.intakeId}`;
@@ -64,28 +73,40 @@ async function handleImageEvent(
 	);
 }
 
+async function processWebhookEvents(
+	body: LineWebhookPayload,
+	env: Env,
+): Promise<void> {
+	for (const event of body.events ?? []) {
+		if (isImageMessageEvent(event)) {
+			await handleImageEvent(event, env);
+			continue;
+		}
+
+		if (isTextMessageEvent(event)) {
+			const replyText = routeCommand(event.message.text);
+			await replyToLine(
+				event.replyToken,
+				replyText,
+				env.LINE_CHANNEL_ACCESS_TOKEN,
+			);
+		}
+	}
+}
+
 export async function handleWebhook(
 	request: Request,
 	env: Env,
+	ctx: ExecutionContext,
 ): Promise<Response> {
 	try {
 		const body = (await request.json()) as LineWebhookPayload;
 
-		for (const event of body.events ?? []) {
-			if (isImageMessageEvent(event)) {
-				await handleImageEvent(event, env);
-				continue;
-			}
-
-			if (isTextMessageEvent(event)) {
-				const replyText = routeCommand(event.message.text);
-				await replyToLine(
-					event.replyToken,
-					replyText,
-					env.LINE_CHANNEL_ACCESS_TOKEN,
-				);
-			}
-		}
+		ctx.waitUntil(
+			processWebhookEvents(body, env).catch((error) => {
+				console.error('Webhook background processing failed:', error);
+			}),
+		);
 
 		return Response.json({
 			status: 'ok',
