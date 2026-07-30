@@ -10,7 +10,30 @@ export interface NormalizedWineEvent {
 	isWineEvent: boolean;
 }
 
-const MOJIBAKE_PATTERN = /(?:Ã.|Â.|â.|ð.|ï¿½)/;
+const MOJIBAKE_PATTERN = /(?:Ã[\x80-\xBF]|Â[\x80-\xBF]|â[\x80-\xBF]{1,2}|ð[\x80-\xBF]|ï¿½)/;
+
+const COMMON_MOJIBAKE_REPLACEMENTS: ReadonlyArray<readonly [string, string]> = [
+	['â€™', '’'],
+	['â€˜', '‘'],
+	['â€œ', '“'],
+	['â€', '”'],
+	['â€“', '–'],
+	['â€”', '—'],
+	['â€¦', '…'],
+	['Ã¢', 'â'],
+	['Ã©', 'é'],
+	['Ã¨', 'è'],
+	['Ãª', 'ê'],
+	['Ã«', 'ë'],
+	['Ã ', 'à'],
+	['Ã¡', 'á'],
+	['Ã´', 'ô'],
+	['Ã¶', 'ö'],
+	['Ã¼', 'ü'],
+	['Ã§', 'ç'],
+	['Ã±', 'ñ'],
+	['Â', ''],
+];
 
 // Windows-1252 characters used for byte values 0x80–0x9F.
 const WINDOWS_1252_BYTES = new Map<number, number>([
@@ -30,24 +53,35 @@ function windows1252Byte(character: string): number | null {
 	return WINDOWS_1252_BYTES.get(codePoint) ?? null;
 }
 
+function replaceCommonMojibake(value: string): string {
+	let repaired = value;
+	for (const [broken, correct] of COMMON_MOJIBAKE_REPLACEMENTS) {
+		repaired = repaired.split(broken).join(correct);
+	}
+	return repaired;
+}
+
 /**
  * Repairs UTF-8 text accidentally decoded as Windows-1252/Latin-1.
- * Correct Unicode text, including Thai, is returned unchanged.
+ * Correct Unicode text, including Thai and legitimate French accents, is unchanged.
  */
 export function normalizeUtf8Text(value: string | null): string | null {
-	if (!value || !MOJIBAKE_PATTERN.test(value)) return value;
+	if (!value) return value;
+
+	const directlyRepaired = replaceCommonMojibake(value);
+	if (directlyRepaired !== value || !MOJIBAKE_PATTERN.test(value)) return directlyRepaired;
 
 	try {
 		const bytes: number[] = [];
 		for (const character of value) {
 			const byte = windows1252Byte(character);
-			if (byte === null) return value;
+			if (byte === null) return directlyRepaired;
 			bytes.push(byte);
 		}
 
 		return new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(bytes));
 	} catch {
-		return value;
+		return directlyRepaired;
 	}
 }
 
