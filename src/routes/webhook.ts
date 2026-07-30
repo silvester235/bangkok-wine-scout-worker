@@ -44,6 +44,32 @@ async function replyToLine(
 	}
 }
 
+interface Env {
+	LINE_CHANNEL_ACCESS_TOKEN: string;
+}
+async function replyMessage(
+	replyToken: string,
+	text: string,
+	env: Env,
+): Promise<void> {
+	await fetch('https://api.line.me/v2/bot/message/reply', {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
+		},
+		body: JSON.stringify({
+			replyToken,
+			messages: [
+				{
+					type: 'text',
+					text,
+				},
+			],
+		}),
+	});
+}
+
 export async function handleWebhook(
 	request: Request,
 	env: Env,
@@ -52,7 +78,19 @@ export async function handleWebhook(
 		const body = (await request.json()) as WebhookPayload;
 
 		console.log(JSON.stringify(body, null, 2));
+const event = body.events?.[0] as LineTextEvent | undefined;
 
+if (
+	event?.type === 'message' &&
+	event.message?.type === 'text' &&
+	event.replyToken
+) {
+	await replyMessage(
+		event.replyToken,
+		`👋 Bangkok Wine Scout received:\n\n${event.message.text}`,
+		env,
+	);
+}
 		for (const event of body.events ?? []) {
 			const lineEvent = event as LineTextEvent;
 

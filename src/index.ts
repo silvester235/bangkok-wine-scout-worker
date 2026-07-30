@@ -3,6 +3,14 @@ import { handleHome } from './routes/home';
 import { handleWebhook } from './routes/webhook';
 import { notFoundResponse } from './utils/responses';
 
+interface LineTextEvent {
+	type: 'message';
+	replyToken: string;
+	message: {
+		type: 'text';
+		text: string;
+	};
+}
 export default {
 	async fetch(request, env): Promise<Response> {
 		const url = new URL(request.url);
