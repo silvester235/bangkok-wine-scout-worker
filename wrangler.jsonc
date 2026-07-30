@@ -22,5 +22,12 @@
 			"binding": "EVENT_INTAKES",
 			"bucket_name": "bangkok-wine-scout-intakes"
 		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "bangkok-wine-scout",
+			"database_id": "0fe8aec8-170f-47da-8abb-303cae3d1103"
+		}
 	]
 }
