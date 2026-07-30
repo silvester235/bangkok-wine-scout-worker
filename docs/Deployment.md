@@ -14,11 +14,34 @@
 npm install
 ```
 
+## Required R2 bucket
+
+The durable LINE image-intake pipeline uses the Wrangler binding `EVENT_INTAKES` and the R2 bucket `bangkok-wine-scout-intakes`.
+
+Create the bucket once before the first deployment:
+
+```bash
+npx wrangler r2 bucket create bangkok-wine-scout-intakes
+```
+
+The binding is already configured in `wrangler.jsonc`.
+
+Each LINE image is stored below a deterministic prefix derived from the LINE message ID:
+
+```text
+intakes/line-{message-id}/original
+intakes/line-{message-id}/metadata.json
+```
+
+This makes repeated LINE webhook delivery idempotent. The acknowledgement confirms durable storage only; it does not confirm extraction, review, or publication.
+
 ## Local development
 
 ```bash
 npm run dev
 ```
+
+Local R2 data is managed by Wrangler's local development environment.
 
 ## Deploy to Cloudflare Workers
 
@@ -37,14 +60,15 @@ npx wrangler secret put LINE_CHANNEL_SECRET
 
 Future phases may add secrets for AI providers and dashboard authentication.
 
-## Future bindings
+## Current bindings
 
-Phase 2 and later will require Cloudflare bindings for:
+| Binding | Resource | Purpose |
+|---|---|---|
+| `EVENT_INTAKES` | R2 bucket `bangkok-wine-scout-intakes` | Original LINE images and durable intake metadata |
 
-- R2 bucket for original event images
-- D1 database for event and intake records
+## Planned bindings
 
-Bindings must be defined in the Wrangler configuration and documented when introduced.
+The next persistence phase will add a D1 database for searchable intake state, extraction results, canonical events, and review workflow data.
 
 ## Verification checklist
 
@@ -57,12 +81,14 @@ After deployment:
 - `help`, `about`, and `version` return expected replies
 - Cloudflare logs show no unhandled errors
 
-After image intake is implemented:
+For image intake:
 
-- LINE image receives an acknowledgement
-- Original image exists in R2
-- Intake record exists in D1
-- Failed analysis does not lose the original image
+- Send one image to the LINE account
+- LINE replies that the flyer was stored for review
+- R2 contains the original object and `metadata.json`
+- Send or replay the same LINE message ID
+- The existing intake is recognized rather than creating a second prefix
+- A failed downstream phase cannot remove the original image
 
 ## Rollback
 
