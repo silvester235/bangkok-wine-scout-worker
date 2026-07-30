@@ -1,5 +1,6 @@
 import { APP_NAME, VERSION } from '../config';
 import { routeCommand } from '../commands/router';
+import { extractAndStoreEvent } from '../services/event-extraction';
 import { storeLineImageAsset } from '../services/event-intake';
 import {
 	downloadLineMessageContent,
@@ -7,17 +8,12 @@ import {
 	replyToLine,
 } from '../services/line';
 import { extractAndStoreOcr } from '../services/ocr';
+import type { WorkerEnv } from '../types/env';
 import type {
 	LineImageMessageEvent,
 	LineTextMessageEvent,
 	LineWebhookPayload,
 } from '../types/line';
-
-interface Env {
-	LINE_CHANNEL_ACCESS_TOKEN: string;
-	EVENT_INTAKES: R2Bucket;
-	AI: Ai;
-}
 
 function isTextMessageEvent(event: unknown): event is LineTextMessageEvent {
 	const candidate = event as LineTextMessageEvent;
@@ -44,7 +40,7 @@ function getPushTarget(event: LineImageMessageEvent): string | undefined {
 
 async function processImageEvent(
 	event: LineImageMessageEvent,
-	env: Env,
+	env: WorkerEnv,
 ): Promise<void> {
 	console.log('LINE image intake started', { messageId: event.message.id });
 
@@ -64,6 +60,8 @@ async function processImageEvent(
 
 	let ocrStatus: 'completed' | 'failed' | 'skipped' = 'skipped';
 	let ocrCharacters = 0;
+	let eventStatus: 'completed' | 'failed' | 'skipped' = 'skipped';
+	let eventTitle: string | null = null;
 
 	if (!asset.duplicate) {
 		const ocr = await extractAndStoreOcr(env.AI, env.EVENT_INTAKES, {
@@ -74,6 +72,20 @@ async function processImageEvent(
 		});
 		ocrStatus = ocr.status;
 		ocrCharacters = ocr.text.length;
+
+		if (ocr.status === 'completed') {
+			const extraction = await extractAndStoreEvent(
+				env.AI,
+				env.EVENT_INTAKES,
+				{
+					intakeId: asset.intakeId,
+					assetId: asset.assetId,
+					ocrText: ocr.text,
+				},
+			);
+			eventStatus = extraction.status;
+			eventTitle = extraction.event?.title ?? null;
+		}
 	}
 
 	console.log('LINE image intake completed', {
@@ -84,6 +96,8 @@ async function processImageEvent(
 		duplicate: asset.duplicate,
 		ocrStatus,
 		ocrCharacters,
+		eventStatus,
+		eventTitle,
 	});
 
 	const target = getPushTarget(event);
@@ -97,10 +111,14 @@ async function processImageEvent(
 	let finalText: string;
 	if (asset.duplicate) {
 		finalText = `Already received. Existing intake: ${asset.intakeId}`;
-	} else if (ocrStatus === 'completed') {
-		finalText = `Stored and OCR completed. Intake: ${asset.intakeId}`;
-	} else {
+	} else if (ocrStatus !== 'completed') {
 		finalText = `Stored, but OCR failed. Intake: ${asset.intakeId}`;
+	} else if (eventStatus === 'completed') {
+		finalText = eventTitle
+			? `Stored, OCR completed, and event extracted: ${eventTitle}. Intake: ${asset.intakeId}`
+			: `Stored, OCR completed, and event data extracted. Intake: ${asset.intakeId}`;
+	} else {
+		finalText = `Stored and OCR completed, but event extraction failed. Intake: ${asset.intakeId}`;
 	}
 
 	await pushToLine(target, finalText, env.LINE_CHANNEL_ACCESS_TOKEN);
@@ -108,7 +126,7 @@ async function processImageEvent(
 
 async function acknowledgeAndProcessImage(
 	event: LineImageMessageEvent,
-	env: Env,
+	env: WorkerEnv,
 	ctx: ExecutionContext,
 ): Promise<void> {
 	await replyToLine(
@@ -139,7 +157,7 @@ async function acknowledgeAndProcessImage(
 
 async function processWebhookEvents(
 	body: LineWebhookPayload,
-	env: Env,
+	env: WorkerEnv,
 	ctx: ExecutionContext,
 ): Promise<void> {
 	for (const event of body.events ?? []) {
@@ -161,7 +179,7 @@ async function processWebhookEvents(
 
 export async function handleWebhook(
 	request: Request,
-	env: Env,
+	env: WorkerEnv,
 	ctx: ExecutionContext,
 ): Promise<Response> {
 	try {
