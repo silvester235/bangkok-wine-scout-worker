@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { NormalizedWineEvent } from './event-normalizer';
 import { validateWineEvent } from './event-validator';
 
+const NOW = new Date('2026-07-31T08:00:00.000Z');
+
 function validEvent(overrides: Partial<NormalizedWineEvent> = {}): NormalizedWineEvent {
 	return {
 		date: '2026-08-15',
@@ -18,14 +20,39 @@ function validEvent(overrides: Partial<NormalizedWineEvent> = {}): NormalizedWin
 }
 
 describe('validateWineEvent', () => {
-	it('accepts a complete event', () => {
+	it('accepts a complete future event', () => {
 		const result = validateWineEvent({
 			title: 'French Wine Dinner',
 			bookingUrl: 'https://example.com/book',
 			event: validEvent(),
+			now: NOW,
 		});
 
 		expect(result).toEqual({ valid: true, errors: [], warnings: [] });
+	});
+
+	it('accepts an event taking place today in Bangkok', () => {
+		const result = validateWineEvent({
+			title: 'Austrian Wine Masterclass',
+			bookingUrl: 'https://example.com/book',
+			event: validEvent({ date: '2026-07-31' }),
+			now: NOW,
+		});
+
+		expect(result.valid).toBe(true);
+		expect(result.errors).not.toContain('Event date is in the past');
+	});
+
+	it('rejects an event in the past in Bangkok', () => {
+		const result = validateWineEvent({
+			title: 'Austrian Wine Masterclass',
+			bookingUrl: 'https://example.com/book',
+			event: validEvent({ date: '2021-07-31' }),
+			now: NOW,
+		});
+
+		expect(result.valid).toBe(false);
+		expect(result.errors).toContain('Event date is in the past');
 	});
 
 	it('rejects missing required fields', () => {
@@ -33,6 +60,7 @@ describe('validateWineEvent', () => {
 			title: null,
 			bookingUrl: null,
 			event: validEvent({ date: null }),
+			now: NOW,
 		});
 
 		expect(result.valid).toBe(false);
@@ -45,6 +73,7 @@ describe('validateWineEvent', () => {
 			title: 'Private Dinner Event',
 			bookingUrl: null,
 			event: validEvent({ isWineEvent: false }),
+			now: NOW,
 		});
 
 		expect(result.errors).toContain('Not classified as a wine event');
@@ -55,6 +84,7 @@ describe('validateWineEvent', () => {
 			title: 'French Wine Dinner',
 			bookingUrl: 'example dot com',
 			event: validEvent(),
+			now: NOW,
 		});
 
 		expect(result.errors).toContain('Invalid booking URL');
@@ -71,6 +101,7 @@ describe('validateWineEvent', () => {
 				contactEmail: null,
 				contactPhone: null,
 			}),
+			now: NOW,
 		});
 
 		expect(result.valid).toBe(true);
