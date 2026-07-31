@@ -1,5 +1,10 @@
 import type { NormalizedWineEvent } from './event-normalizer';
 import { matchExistingEvent, type ExistingEventCandidate } from './event-matcher';
+import {
+	resolveEventWithAi,
+	type AiEventResolverConfig,
+	type AiResolutionCandidate,
+} from './ai-event-resolver';
 
 export type EventAssetRole = 'main' | 'flyer' | 'menu' | 'reminder' | 'social' | 'map' | 'other';
 
@@ -16,10 +21,22 @@ export interface SaveWineEventResult {
 	duplicate: boolean;
 }
 
+export interface AiEventResolutionOptions {
+	ai: Ai;
+	resolver: AiEventResolverConfig;
+	highThreshold: number;
+	lowThreshold: number;
+}
+
+interface EventResolutionCandidate extends ExistingEventCandidate {
+	priceTHB: number | null;
+	description: string | null;
+}
+
 export async function findCandidateEvents(
 	db: D1Database,
 	incoming: Pick<ExistingEventCandidate, 'title' | 'date' | 'venue'>,
-): Promise<ExistingEventCandidate[]> {
+): Promise<EventResolutionCandidate[]> {
 	if (!incoming.date && !incoming.title?.trim() && !incoming.venue?.trim()) return [];
 
 	const result = await db
@@ -29,7 +46,9 @@ export async function findCandidateEvents(
 				title,
 				event_date AS date,
 				start_time AS startTime,
-				venue
+				venue,
+				price_thb AS priceTHB,
+				NULL AS description
 			FROM events
 			WHERE (
 				?1 IS NOT NULL
@@ -52,7 +71,7 @@ export async function findCandidateEvents(
 			LIMIT 15`,
 		)
 		.bind(incoming.date, incoming.title?.trim() || null, incoming.venue?.trim() || null)
-		.all<ExistingEventCandidate>();
+		.all<EventResolutionCandidate>();
 
 	return result.results ?? [];
 }
@@ -85,7 +104,11 @@ async function linkEventAsset(
 		.run();
 }
 
-export async function saveWineEvent(db: D1Database, input: StoredWineEventInput): Promise<SaveWineEventResult> {
+export async function saveWineEvent(
+	db: D1Database,
+	input: StoredWineEventInput,
+	aiResolution?: AiEventResolutionOptions,
+): Promise<SaveWineEventResult> {
 	const incoming = {
 		title: input.title,
 		date: input.event.date,
@@ -94,7 +117,7 @@ export async function saveWineEvent(db: D1Database, input: StoredWineEventInput)
 	};
 	const candidates = await findCandidateEvents(db, incoming);
 	const match = matchExistingEvent(incoming, candidates);
-	const id = match.eventId ?? `${input.intakeId}:${input.assetId}`;
+	let resolvedEventId = match.eventId;
 	const createdAt = new Date().toISOString();
 
 	console.log('EVENT RESOLUTION', JSON.stringify({
@@ -105,7 +128,52 @@ export async function saveWineEvent(db: D1Database, input: StoredWineEventInput)
 		decision: match.matched ? 'MATCH' : 'NEW EVENT',
 	}));
 
-	if (match.matched) {
+	const ambiguous = aiResolution
+		&& match.confidence > aiResolution.lowThreshold
+		&& match.confidence < aiResolution.highThreshold;
+	if (ambiguous) {
+		try {
+			const aiResult = await resolveEventWithAi(
+				aiResolution.ai,
+				aiResolution.resolver,
+				{
+					title: input.title,
+					venue: input.event.venue,
+					date: input.event.date,
+					time: input.event.startTime,
+					price: input.event.priceTHB,
+					description: null,
+				},
+				candidates.slice(0, 5).map((candidate): AiResolutionCandidate => ({
+					id: candidate.id,
+					title: candidate.title,
+					venue: candidate.venue,
+					date: candidate.date,
+					time: candidate.startTime,
+					price: candidate.priceTHB,
+					description: candidate.description,
+				})),
+			);
+
+			resolvedEventId = aiResult.decision === 'MATCH' ? aiResult.candidateId : null;
+			console.log('AI EVENT RESOLUTION', JSON.stringify({
+				candidates: Math.min(candidates.length, 5),
+				deterministicConfidence: match.confidence,
+				decision: aiResult.decision,
+				candidateId: aiResult.candidateId,
+				confidence: aiResult.confidence,
+			}));
+		} catch (error) {
+			console.error('AI EVENT RESOLUTION FAILED', JSON.stringify({
+				deterministicConfidence: match.confidence,
+				error: error instanceof Error ? error.message : String(error),
+			}));
+		}
+	}
+
+	const id = resolvedEventId ?? `${input.intakeId}:${input.assetId}`;
+
+	if (resolvedEventId) {
 		await db
 			.prepare(
 				`UPDATE events SET

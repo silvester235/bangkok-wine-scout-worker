@@ -1,7 +1,14 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedWineEvent } from './event-normalizer';
-import { findCandidateEvents, saveWineEvent, type StoredWineEventInput } from './event-repository';
+import { getOptionalAiEventResolutionOptions } from '../config';
+import type { WorkerEnv } from '../types/env';
+import {
+	findCandidateEvents,
+	saveWineEvent,
+	type AiEventResolutionOptions,
+	type StoredWineEventInput,
+} from './event-repository';
 
 declare module 'cloudflare:test' {
 	interface ProvidedEnv {
@@ -193,5 +200,112 @@ describe('D1 event resolution', () => {
 		).bind('flyer-1').first<{ count: number; role: string }>();
 
 		expect(link).toEqual({ count: 1, role: 'flyer' });
+	});
+});
+
+describe('AI-assisted event resolution', () => {
+	function aiOptions(response: unknown): { options: AiEventResolutionOptions; run: ReturnType<typeof vi.fn> } {
+		const run = vi.fn().mockResolvedValue(response);
+		return {
+			run,
+			options: {
+				ai: { run } as unknown as Ai,
+				highThreshold: 0.85,
+				lowThreshold: 0.45,
+				resolver: { provider: 'workers_ai', model: 'test-model', timeoutMs: 50 },
+			},
+		};
+	}
+
+	function ambiguousInput(assetId: string): StoredWineEventInput {
+		return input(assetId, {
+			title: 'California Wine Tasting',
+			event: { startTime: '20:00' },
+		});
+	}
+
+	it('invokes AI for an ambiguous match and accepts MATCH', async () => {
+		const existing = await saveWineEvent(env.DB, input('flyer-1'));
+		const { options, run } = aiOptions({
+			decision: 'MATCH', candidateId: existing.id, confidence: 0.91, reason: 'Same event.',
+		});
+
+		const result = await saveWineEvent(env.DB, ambiguousInput('flyer-2'), options);
+
+		expect(run).toHaveBeenCalledOnce();
+		expect(result).toEqual({ id: existing.id, duplicate: true });
+	});
+
+	it('accepts NEW_EVENT for an ambiguous match', async () => {
+		await saveWineEvent(env.DB, input('flyer-1'));
+		const { options } = aiOptions({
+			decision: 'NEW_EVENT', candidateId: null, confidence: 0.95, reason: 'Different event.',
+		});
+
+		const result = await saveWineEvent(env.DB, ambiguousInput('flyer-2'), options);
+
+		expect(result).toEqual({ id: 'intake-flyer-2:flyer-2', duplicate: false });
+	});
+
+	it('skips AI for high and low deterministic confidence', async () => {
+		await saveWineEvent(env.DB, input('flyer-1'));
+		const { options, run } = aiOptions({
+			decision: 'NEW_EVENT', candidateId: null, confidence: 1, reason: 'Unused.',
+		});
+
+		await saveWineEvent(env.DB, input('exact-copy'), options);
+		await saveWineEvent(env.DB, input('different', { title: 'Burgundy Masterclass' }), options);
+
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		['invalid JSON', { response: 'not json' }],
+		['invalid candidate', { decision: 'MATCH', candidateId: 'missing', confidence: 0.9, reason: 'Match.' }],
+	] as const)('falls back to the deterministic result for %s', async (_label, response) => {
+		const existing = await saveWineEvent(env.DB, input('flyer-1'));
+		const { options } = aiOptions(response);
+
+		const result = await saveWineEvent(env.DB, ambiguousInput('flyer-2'), options);
+
+		expect(result).toEqual({ id: existing.id, duplicate: true });
+	});
+
+	it('falls back to the deterministic result when AI times out', async () => {
+		const existing = await saveWineEvent(env.DB, input('flyer-1'));
+		const run = vi.fn(() => new Promise(() => undefined));
+		const options: AiEventResolutionOptions = {
+			ai: { run } as unknown as Ai,
+			highThreshold: 0.85,
+			lowThreshold: 0.45,
+			resolver: { provider: 'workers_ai', model: 'test-model', timeoutMs: 1 },
+		};
+
+		const result = await saveWineEvent(env.DB, ambiguousInput('flyer-2'), options);
+
+		expect(result).toEqual({ id: existing.id, duplicate: true });
+	});
+
+	it.each([
+		['invalid thresholds', { HIGH_THRESHOLD: '0.4', LOW_THRESHOLD: '0.5', AI_TIMEOUT_MS: '5000' }],
+		['invalid timeout', { HIGH_THRESHOLD: '0.85', LOW_THRESHOLD: '0.45', AI_TIMEOUT_MS: '0' }],
+	] as const)('continues deterministic ingestion with %s', async (_label, values) => {
+		const configError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const options = getOptionalAiEventResolutionOptions({
+			AI: { run: vi.fn() } as unknown as Ai,
+			AI_PROVIDER: 'workers_ai',
+			AI_MODEL: 'test-model',
+			...values,
+		} as WorkerEnv);
+
+		const result = await saveWineEvent(env.DB, input('config-fallback'), options);
+
+		expect(options).toBeUndefined();
+		expect(result).toEqual({ id: 'intake-config-fallback:config-fallback', duplicate: false });
+		expect(configError).toHaveBeenCalledWith(
+			'AI EVENT RESOLUTION CONFIG INVALID',
+			expect.stringContaining('error'),
+		);
+		configError.mockRestore();
 	});
 });
