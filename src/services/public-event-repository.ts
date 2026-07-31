@@ -1,5 +1,5 @@
 export interface PublicEventCursor {
-	date: string;
+	date: string | null;
 	startTime: string;
 	id: string;
 }
@@ -28,7 +28,7 @@ export interface PublicAssetSummary {
 export interface PublicEventSummary {
 	slug: string;
 	title: string | null;
-	date: string;
+	date: string | null;
 	startTime: string | null;
 	priceTHB: number | null;
 	venue: string | null;
@@ -49,7 +49,7 @@ interface PublicEventRow {
 	id: string;
 	slug: string;
 	title: string | null;
-	event_date: string;
+	event_date: string | null;
 	start_time: string | null;
 	price_thb: number | null;
 	venue: string | null;
@@ -175,14 +175,14 @@ export async function listPublishedEvents(
 	db: D1Database,
 	options: PublicEventListOptions,
 ): Promise<{ events: PublicEventSummary[]; nextCursor: PublicEventCursor | null }> {
-	const conditions = [PUBLIC_EVENT_CONDITION, 'e.event_date IS NOT NULL'];
-	const bindings: Array<string | number> = [];
-	if (!options.includePast) {
+	const conditions = [PUBLIC_EVENT_CONDITION];
+	const bindings: Array<string | number | null> = [];
+	if (options.from) {
 		conditions.push('e.event_date >= ?');
-		bindings.push(options.from && options.from > options.todayBangkok ? options.from : options.todayBangkok);
-	} else if (options.from) {
-		conditions.push('e.event_date >= ?');
-		bindings.push(options.from);
+		bindings.push(!options.includePast && options.from < options.todayBangkok ? options.todayBangkok : options.from);
+	} else if (!options.includePast) {
+		conditions.push('(e.event_date IS NULL OR e.event_date >= ?)');
+		bindings.push(options.todayBangkok);
 	}
 	if (options.to) {
 		conditions.push('e.event_date <= ?');
@@ -202,11 +202,17 @@ export async function listPublishedEvents(
 	}
 	if (options.cursor) {
 		conditions.push(`(
-			e.event_date > ? OR
-			(e.event_date = ? AND COALESCE(e.start_time, '') > ?) OR
-			(e.event_date = ? AND COALESCE(e.start_time, '') = ? AND e.id > ?)
+			CASE WHEN e.event_date IS NULL THEN 1 ELSE 0 END > ? OR
+			(CASE WHEN e.event_date IS NULL THEN 1 ELSE 0 END = ? AND (
+				COALESCE(e.event_date, '') > COALESCE(?, '') OR
+				(COALESCE(e.event_date, '') = COALESCE(?, '') AND COALESCE(e.start_time, '') > ?) OR
+				(COALESCE(e.event_date, '') = COALESCE(?, '') AND COALESCE(e.start_time, '') = ? AND e.id > ?)
+			))
 		)`);
+		const undated = options.cursor.date === null ? 1 : 0;
 		bindings.push(
+			undated,
+			undated,
 			options.cursor.date,
 			options.cursor.date,
 			options.cursor.startTime,
@@ -221,7 +227,11 @@ export async function listPublishedEvents(
 		`SELECT ${PUBLIC_EVENT_COLUMNS}
 		FROM events e
 		WHERE ${conditions.join('\n AND ')}
-		ORDER BY e.event_date, COALESCE(e.start_time, ''), e.id
+		ORDER BY
+			CASE WHEN e.event_date IS NULL THEN 1 ELSE 0 END,
+			e.event_date,
+			COALESCE(e.start_time, ''),
+			e.id
 		LIMIT ?`,
 	).bind(...bindings).all<PublicEventRow>();
 	const rows = result.results ?? [];

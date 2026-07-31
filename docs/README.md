@@ -66,14 +66,17 @@ OCR / AI extraction
     ↓
 Store image
     ↓
-Create event
+Extraction succeeded? ── no ──> Create minimal "Wine Event"
+    │ yes
+    ↓
+Create event with detected metadata
     ↓
 Populate detected fields
     ↓
 Publish
 ```
 
-Metadata enrichment is optional and can happen later. A missing date, time, booking URL, venue, organiser, price, wine list, region, contact, speaker, or description is informational and never blocks publication. Technical failures such as an unreadable asset, failed OCR/extraction, failed R2 operation, or failed D1 write still stop that intake.
+Metadata enrichment is optional and can happen later. Missing metadata and recoverable OCR or AI extraction failures never block publication. When extraction yields no usable event, ingestion creates a published `Wine Event` fallback with nullable scalar fields, empty collections, and the flyer linked publicly. Only integrity failures such as an image download or R2 failure, a failed D1 write or asset link, a damaged queue message, or missing required bindings stop the intake.
 
 ## Core rules
 

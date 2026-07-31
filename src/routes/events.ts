@@ -54,9 +54,9 @@ function decodeCursor(value: string): PublicEventCursor {
 		if (!value || value.length > 500 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error();
 		const padded = value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
 		const parsed = JSON.parse(atob(padded)) as Partial<PublicEventCursor>;
-		if (!isIsoDate(parsed.date ?? '') || typeof parsed.startTime !== 'string' || typeof parsed.id !== 'string' || !parsed.id) throw new Error();
+		if ((parsed.date !== null && !isIsoDate(parsed.date ?? '')) || typeof parsed.startTime !== 'string' || typeof parsed.id !== 'string' || !parsed.id) throw new Error();
 		if (parsed.startTime && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(parsed.startTime)) throw new Error();
-		return { date: parsed.date!, startTime: parsed.startTime, id: parsed.id };
+		return { date: parsed.date ?? null, startTime: parsed.startTime, id: parsed.id };
 	} catch {
 		throw new ApiError(400, 'INVALID_CURSOR', 'The supplied cursor is invalid.');
 	}

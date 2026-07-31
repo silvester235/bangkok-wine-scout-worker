@@ -45,7 +45,7 @@ Errors:
 
 ### `GET /api/events`
 
-Returns published events ordered by date, start time, and a stable final key. By default, events before today's `Asia/Bangkok` calendar date are excluded; events occurring today are included.
+Returns published events with dated events first in chronological date/time order, followed by undated events in stable order. `date` is `null` when extraction did not detect a date. By default, dated events before today's `Asia/Bangkok` calendar date are excluded; events occurring today and undated published events are included. Explicit `from` or `to` filters select dated events only.
 
 | Parameter | Description |
 |---|---|
@@ -126,7 +126,7 @@ Receives LINE Messaging API webhook events. Known commands are routed to the com
 
 Supported commands: `ping`, `help`, `version`, and `about`.
 
-LINE retries are idempotent by message and asset identifiers. A successful intake acknowledgement precedes OCR, extraction, and persistence; the event is published automatically when those technical stages succeed.
+LINE retries are idempotent by message and asset identifiers. A successful intake acknowledgement precedes OCR, extraction, and persistence. Recoverable OCR or extraction failure creates a published `Wine Event` fallback with a public flyer; storage, D1, asset-link, binding, download, and malformed-message failures remain retryable technical failures.
 
 ## Security boundary
 

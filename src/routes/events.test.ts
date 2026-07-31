@@ -31,7 +31,7 @@ function dateOffset(days: number): string {
 
 async function addEvent(input: {
 	id: string;
-	date?: string;
+	date?: string | null;
 	startTime?: string | null;
 	status?: string;
 	publishedAt?: string | null;
@@ -51,7 +51,7 @@ async function addEvent(input: {
 		`intake-${input.id}`,
 		`source-${input.id}`,
 		input.title ?? `Event ${input.id}`,
-		input.date ?? dateOffset(1),
+		input.date === undefined ? dateOffset(1) : input.date,
 		input.startTime === undefined ? '18:00' : input.startTime,
 		input.venue ?? 'Attico',
 		JSON.stringify(input.wines ?? ['Riesling']),
@@ -129,6 +129,48 @@ describe('public event API', () => {
 		expect([...first.body.data, ...second.body.data].map((event: { slug: string }) => event.slug))
 			.toEqual(['slug-a', 'slug-b', 'slug-c']);
 		expect(second.body.pagination.nextCursor).toBeNull();
+	});
+
+	it('lists undated published events after dated events with a nullable date', async () => {
+		await addEvent({ id: 'undated-b', date: null, startTime: null });
+		await addEvent({ id: 'dated', date: dateOffset(1), startTime: '18:00' });
+		await addEvent({ id: 'undated-a', date: null, startTime: null });
+
+		const { body } = await json('/api/events');
+
+		expect(body.data.map((event: { slug: string }) => event.slug)).toEqual([
+			'slug-dated',
+			'slug-undated-a',
+			'slug-undated-b',
+		]);
+		expect(body.data[1].date).toBeNull();
+	});
+
+	it('paginates stably across the dated-to-undated boundary', async () => {
+		await addEvent({ id: 'dated-a', date: dateOffset(1), startTime: '18:00' });
+		await addEvent({ id: 'dated-b', date: dateOffset(2), startTime: '18:00' });
+		await addEvent({ id: 'undated-a', date: null, startTime: null });
+		await addEvent({ id: 'undated-b', date: null, startTime: null });
+
+		const first = await json('/api/events?limit=2');
+		const second = await json(`/api/events?limit=2&cursor=${encodeURIComponent(first.body.pagination.nextCursor)}`);
+
+		expect([...first.body.data, ...second.body.data].map((event: { slug: string }) => event.slug)).toEqual([
+			'slug-dated-a',
+			'slug-dated-b',
+			'slug-undated-a',
+			'slug-undated-b',
+		]);
+		expect(second.body.pagination.nextCursor).toBeNull();
+	});
+
+	it('keeps explicit date-range filters limited to dated events', async () => {
+		await addEvent({ id: 'dated', date: dateOffset(2) });
+		await addEvent({ id: 'undated', date: null });
+
+		const { body } = await json(`/api/events?from=${dateOffset(1)}&to=${dateOffset(3)}`);
+
+		expect(body.data.map((event: { slug: string }) => event.slug)).toEqual(['slug-dated']);
 	});
 
 	it('rejects an invalid cursor', async () => {

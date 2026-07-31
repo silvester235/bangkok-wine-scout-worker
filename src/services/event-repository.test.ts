@@ -5,6 +5,7 @@ import { getOptionalAiEventResolutionOptions } from '../config';
 import type { WorkerEnv } from '../types/env';
 import {
 	findCandidateEvents,
+	findEventIdByAssetId,
 	saveWineEvent,
 	type AiEventResolutionOptions,
 	type StoredWineEventInput,
@@ -280,6 +281,58 @@ describe('D1 event resolution', () => {
 
 		expect(link).toEqual({ count: 1, role: 'flyer' });
 		expect((await env.DB.prepare('SELECT COUNT(*) AS count FROM events').first<{ count: number }>())?.count).toBe(1);
+	});
+
+	it('finds whether a stored asset is already linked to an event', async () => {
+		const saved = await saveWineEvent(env.DB, input('flyer-1'));
+
+		expect(await findEventIdByAssetId(env.DB, 'flyer-1')).toBe(saved.id);
+		expect(await findEventIdByAssetId(env.DB, 'unlinked')).toBeNull();
+	});
+
+	it('persists the extraction fallback as a published event with a public flyer', async () => {
+		const result = await saveWineEvent(env.DB, input('fallback-flyer', {
+			title: 'Wine Event',
+			assetRole: 'flyer',
+			isPublic: true,
+			r2ObjectKey: 'intakes/fallback/assets/flyer/original',
+			contentType: 'image/jpeg',
+			event: {
+				date: null,
+				startTime: null,
+				priceTHB: null,
+				venue: null,
+				contactEmail: null,
+				contactPhone: null,
+				wines: [],
+				wineRegions: [],
+				isWineEvent: true,
+			},
+		}));
+		const row = await env.DB.prepare(
+			`SELECT e.title, e.slug, e.status, e.published_at, e.event_date,
+				e.start_time, e.venue, e.price_thb, e.contact_email, e.contact_phone,
+				e.wines_json, e.wine_regions_json, ea.asset_role, ea.is_public
+			FROM events e JOIN event_assets ea ON ea.event_id = e.id
+			WHERE e.id = ?`,
+		).bind(result.id).first<Record<string, string | number | null>>();
+
+		expect(row).toMatchObject({
+			title: 'Wine Event',
+			slug: 'wine-event',
+			status: 'published',
+			event_date: null,
+			start_time: null,
+			venue: null,
+			price_thb: null,
+			contact_email: null,
+			contact_phone: null,
+			wines_json: '[]',
+			wine_regions_json: '[]',
+			asset_role: 'flyer',
+			is_public: 1,
+		});
+		expect(row?.published_at).not.toBeNull();
 	});
 
 	it('keeps a published event published when enrichment changes a public field', async () => {
