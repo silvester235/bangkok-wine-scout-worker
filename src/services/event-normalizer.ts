@@ -1,4 +1,5 @@
 import { parseEventDate } from './date-parser';
+import { parseEventTime } from './time-parser';
 
 export interface NormalizedWineEvent {
 	date: string | null;
@@ -83,9 +84,9 @@ export function normalizeUtf8Text(value: string | null): string | null {
 		}
 
 		return new TextDecoder('utf-8', {
-	fatal: true,
-	ignoreBOM: false,
-})
+			fatal: true,
+			ignoreBOM: false,
+		})
 			.decode(new Uint8Array(bytes))
 			.normalize('NFC');
 	} catch {
@@ -148,7 +149,7 @@ export function normalizeWineEvent(event: {
 
 	return {
 		date: parseEventDate(normalizeUtf8Text(event.date)),
-		startTime: normalizeUtf8Text(event.startTime),
+		startTime: parseEventTime(normalizeUtf8Text(event.startTime)),
 		priceTHB: normalizePrice(normalizeUtf8Text(event.price)),
 		venue,
 		contactEmail: firstEmail(contactSources),
