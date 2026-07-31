@@ -82,6 +82,38 @@ describe('matchExistingEvent', () => {
 		expect(result.reasons).toContain('different date');
 	});
 
+	it('rejects a similar title at a different venue', () => {
+		const result = matchExistingEvent(
+			{
+				title: 'Italian Wine Dinner at Attico Bangkok',
+				date: '2026-07-31',
+				startTime: '18:00',
+				venue: 'The Allium Bangkok',
+			},
+			[candidates[0]],
+		);
+
+		expect(result.matched).toBe(false);
+		expect(result.confidence).toBe(0);
+		expect(result.reasons).toContain('different venue');
+	});
+
+	it('rejects a different title at the same venue', () => {
+		const result = matchExistingEvent(
+			{
+				title: 'Burgundy Masterclass',
+				date: '2026-07-31',
+				startTime: '18:00',
+				venue: 'ATTICO, Radisson Blu Plaza Bangkok',
+			},
+			[candidates[0]],
+		);
+
+		expect(result.matched).toBe(false);
+		expect(result.confidence).toBe(0);
+		expect(result.reasons).toContain('different title');
+	});
+
 	it('returns no match when no candidates are supplied', () => {
 		expect(
 			matchExistingEvent(

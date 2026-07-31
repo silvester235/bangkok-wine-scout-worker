@@ -1,6 +1,7 @@
 import type { NormalizedWineEvent } from './event-normalizer';
+import { matchExistingEvent, type ExistingEventCandidate } from './event-matcher';
 
-export type EventAssetRole = 'main' | 'menu' | 'map' | 'social' | 'other';
+export type EventAssetRole = 'main' | 'flyer' | 'menu' | 'reminder' | 'social' | 'map' | 'other';
 
 export interface StoredWineEventInput {
 	intakeId: string;
@@ -15,48 +16,45 @@ export interface SaveWineEventResult {
 	duplicate: boolean;
 }
 
-interface ExistingEventRow {
-	id: string;
-}
+export async function findCandidateEvents(
+	db: D1Database,
+	incoming: Pick<ExistingEventCandidate, 'title' | 'date' | 'venue'>,
+): Promise<ExistingEventCandidate[]> {
+	if (!incoming.date && !incoming.title?.trim() && !incoming.venue?.trim()) return [];
 
-function canonicalText(value: string | null): string | null {
-	if (!value) return null;
-	const normalized = value
-		.normalize('NFC')
-		.toLocaleLowerCase('en-US')
-		.replace(/[^\p{L}\p{N}]+/gu, ' ')
-		.trim()
-		.replace(/\s+/g, ' ');
-	return normalized || null;
-}
-
-async function findDuplicateEvent(db: D1Database, input: StoredWineEventInput): Promise<ExistingEventRow | null> {
-	const canonicalTitle = canonicalText(input.title);
-	if (!canonicalTitle || !input.event.date) return null;
-
-	const candidates = await db
+	const result = await db
 		.prepare(
-			`SELECT id, title, venue
+			`SELECT
+				id,
+				title,
+				event_date AS date,
+				start_time AS startTime,
+				venue
 			FROM events
-			WHERE event_date = ?
-			ORDER BY created_at DESC`,
+			WHERE (
+				?1 IS NOT NULL
+				AND event_date BETWEEN date(?1, '-1 day') AND date(?1, '+1 day')
+			) OR (
+				?1 IS NULL
+				AND (
+					(?2 IS NOT NULL AND (
+						LOWER(title) LIKE '%' || LOWER(?2) || '%'
+						OR LOWER(?2) LIKE '%' || LOWER(title) || '%'
+					))
+					OR (?3 IS NOT NULL AND LOWER(venue) LIKE '%' || LOWER(?3) || '%')
+				)
+			)
+			ORDER BY
+				CASE WHEN event_date = ?1 THEN 0 ELSE 1 END,
+				CASE WHEN LOWER(venue) = LOWER(?3) THEN 0 ELSE 1 END,
+				CASE WHEN LOWER(title) = LOWER(?2) THEN 0 ELSE 1 END,
+				created_at DESC
+			LIMIT 15`,
 		)
-		.bind(input.event.date)
-		.all<{ id: string; title: string | null; venue: string | null }>();
+		.bind(incoming.date, incoming.title?.trim() || null, incoming.venue?.trim() || null)
+		.all<ExistingEventCandidate>();
 
-	const canonicalVenue = canonicalText(input.event.venue);
-	for (const candidate of candidates.results ?? []) {
-		if (canonicalText(candidate.title) !== canonicalTitle) continue;
-
-		const candidateVenue = canonicalText(candidate.venue);
-		// A matching title and date is sufficient when one version has no venue.
-		// When both venues exist, they must also match to avoid merging distinct events.
-		if (canonicalVenue && candidateVenue && canonicalVenue !== candidateVenue) continue;
-
-		return { id: candidate.id };
-	}
-
-	return null;
+	return result.results ?? [];
 }
 
 async function linkEventAsset(
@@ -74,7 +72,7 @@ async function linkEventAsset(
 				asset_role,
 				linked_at
 			) VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(event_id, asset_id) DO UPDATE SET
+			ON CONFLICT(asset_id) DO UPDATE SET
 				asset_role = excluded.asset_role`,
 		)
 		.bind(
@@ -88,22 +86,37 @@ async function linkEventAsset(
 }
 
 export async function saveWineEvent(db: D1Database, input: StoredWineEventInput): Promise<SaveWineEventResult> {
-	const existing = await findDuplicateEvent(db, input);
-	const id = existing?.id ?? `${input.intakeId}:${input.assetId}`;
+	const incoming = {
+		title: input.title,
+		date: input.event.date,
+		startTime: input.event.startTime,
+		venue: input.event.venue,
+	};
+	const candidates = await findCandidateEvents(db, incoming);
+	const match = matchExistingEvent(incoming, candidates);
+	const id = match.eventId ?? `${input.intakeId}:${input.assetId}`;
 	const createdAt = new Date().toISOString();
 
-	if (existing) {
+	console.log('EVENT RESOLUTION', JSON.stringify({
+		candidates: candidates.length,
+		bestMatch: match.eventId,
+		confidence: match.confidence,
+		reasons: match.reasons,
+		decision: match.matched ? 'MATCH' : 'NEW EVENT',
+	}));
+
+	if (match.matched) {
 		await db
 			.prepare(
 				`UPDATE events SET
-					title = COALESCE(?, title),
-					event_date = COALESCE(?, event_date),
-					start_time = COALESCE(?, start_time),
-					price_thb = COALESCE(?, price_thb),
-					venue = COALESCE(?, venue),
-					contact_email = COALESCE(?, contact_email),
-					contact_phone = COALESCE(?, contact_phone),
-					wines_json = CASE WHEN ? <> '[]' THEN ? ELSE wines_json END,
+					title = CASE WHEN NULLIF(TRIM(title), '') IS NULL THEN NULLIF(TRIM(?), '') ELSE title END,
+					event_date = COALESCE(event_date, ?),
+					start_time = COALESCE(start_time, ?),
+					price_thb = COALESCE(price_thb, ?),
+					venue = CASE WHEN NULLIF(TRIM(venue), '') IS NULL THEN NULLIF(TRIM(?), '') ELSE venue END,
+					contact_email = CASE WHEN NULLIF(TRIM(contact_email), '') IS NULL THEN NULLIF(TRIM(?), '') ELSE contact_email END,
+					contact_phone = CASE WHEN NULLIF(TRIM(contact_phone), '') IS NULL THEN NULLIF(TRIM(?), '') ELSE contact_phone END,
+					wines_json = CASE WHEN wines_json IS NULL OR wines_json = '[]' THEN ? ELSE wines_json END,
 					is_wine_event = CASE WHEN ? = 1 THEN 1 ELSE is_wine_event END
 				WHERE id = ?`,
 			)
@@ -115,7 +128,6 @@ export async function saveWineEvent(db: D1Database, input: StoredWineEventInput)
 				input.event.venue,
 				input.event.contactEmail,
 				input.event.contactPhone,
-				JSON.stringify(input.event.wines),
 				JSON.stringify(input.event.wines),
 				input.event.isWineEvent ? 1 : 0,
 				id,
