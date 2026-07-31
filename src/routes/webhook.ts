@@ -1,5 +1,11 @@
-import { APP_NAME, getOptionalAiEventResolutionOptions, VERSION } from '../config';
-import { routeCommand } from '../commands/router';
+import {
+	APP_NAME,
+	getOptionalAiEventResolutionOptions,
+	getOptionalLineTextContextWindowSeconds,
+	VERSION,
+} from '../config';
+import { isKnownCommand, routeCommand } from '../commands/router';
+import { buildEventExtractionContext } from '../services/event-extraction-context';
 import { extractAndStoreEvent } from '../services/event-extraction';
 import { normalizeUtf8Text, normalizeWineEvent } from '../services/event-normalizer';
 import { saveWineEvent } from '../services/event-repository';
@@ -11,6 +17,12 @@ import {
 	replyToLine,
 } from '../services/line';
 import { extractAndStoreOcr } from '../services/ocr';
+import {
+	buildLineConversationKey,
+	claimLineTextContext,
+	markLineTextContextLinked,
+	storePendingLineText,
+} from '../services/line-text-context';
 import type { WorkerEnv } from '../types/env';
 import type {
 	LineImageMessageEvent,
@@ -22,6 +34,7 @@ export interface ImageProcessingMessage {
 	messageId: string;
 	lineUserId?: string;
 	pushTarget?: string;
+	conversationKey?: string;
 	receivedAt: string;
 }
 
@@ -57,6 +70,16 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 		return;
 	}
 
+	const correlationWindow = getOptionalLineTextContextWindowSeconds(env);
+	const lineText = message.conversationKey && correlationWindow
+		? await claimLineTextContext(env.DB, {
+			conversationKey: message.conversationKey,
+			imageAssetId: asset.assetId,
+			imageReceivedAt: message.receivedAt,
+			windowSeconds: correlationWindow,
+		})
+		: null;
+
 	let eventStatus: 'completed' | 'failed' | 'skipped' = 'skipped';
 	let eventTitle: string | null = null;
 	let validationErrors: string[] = [];
@@ -68,64 +91,83 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 		content: downloaded.content,
 	});
 
-	if (ocr.status === 'completed') {
-		console.log('OCR TEXT:', ocr.text);
+	const context = buildEventExtractionContext({
+		sourceText: lineText?.text,
+		ocrText: ocr.status === 'completed' ? ocr.text : null,
+	});
+	console.log('EVENT EXTRACTION CONTEXT', JSON.stringify({
+		event: 'event_extraction_context_built',
+		hasSourceText: Boolean(context.sourceText),
+		hasOcrText: Boolean(context.ocrText),
+		sourceTextLength: context.sourceText?.length ?? 0,
+		ocrTextLength: context.ocrText?.length ?? 0,
+	}));
 
-		const extraction = await extractAndStoreEvent(env.AI, env.EVENT_INTAKES, {
-			intakeId: asset.intakeId,
-			assetId: asset.assetId,
-			ocrText: ocr.text,
+	const extraction = await extractAndStoreEvent(env.AI, env.EVENT_INTAKES, {
+		intakeId: asset.intakeId,
+		assetId: asset.assetId,
+		context,
+	});
+	eventStatus = extraction.status;
+	eventTitle = normalizeUtf8Text(extraction.event?.title ?? null);
+
+	console.log('EXTRACTED EVENT:', JSON.stringify(extraction.event));
+
+	if (extraction.event) {
+		const normalizedEvent = normalizeWineEvent(extraction.event);
+		const validation = validateWineEvent({
+			title: eventTitle,
+			bookingUrl: normalizeUtf8Text(extraction.event.bookingUrl),
+			event: normalizedEvent,
 		});
-		eventStatus = extraction.status;
-		eventTitle = normalizeUtf8Text(extraction.event?.title ?? null);
 
-		console.log('EXTRACTED EVENT:', JSON.stringify(extraction.event));
+		console.log('RAW WINES:', JSON.stringify(extraction.event.wines));
+		console.log('NORMALIZED WINES:', JSON.stringify(normalizedEvent.wines));
+		console.log('EVENT VALIDATION:', JSON.stringify(validation));
 
-		if (extraction.event) {
-			const normalizedEvent = normalizeWineEvent(extraction.event);
-			const validation = validateWineEvent({
-				title: eventTitle,
-				bookingUrl: normalizeUtf8Text(extraction.event.bookingUrl),
-				event: normalizedEvent,
-			});
+		// Persist both artifacts before deciding whether the event is allowed into D1.
+		await env.EVENT_INTAKES.put(
+			`intakes/${asset.intakeId}/assets/${asset.assetId}/event-normalized.json`,
+			JSON.stringify(normalizedEvent, null, 2),
+			{ httpMetadata: { contentType: 'application/json' } },
+		);
 
-			console.log('RAW WINES:', JSON.stringify(extraction.event.wines));
-			console.log('NORMALIZED WINES:', JSON.stringify(normalizedEvent.wines));
-			console.log('EVENT VALIDATION:', JSON.stringify(validation));
-
-			// Persist both artifacts before deciding whether the event is allowed into D1.
-			await env.EVENT_INTAKES.put(
-				`intakes/${asset.intakeId}/assets/${asset.assetId}/event-normalized.json`,
-				JSON.stringify(normalizedEvent, null, 2),
-				{ httpMetadata: { contentType: 'application/json' } },
-			);
-
-			await env.EVENT_INTAKES.put(
+		await env.EVENT_INTAKES.put(
 				`intakes/${asset.intakeId}/assets/${asset.assetId}/event-validation.json`,
 				JSON.stringify(validation, null, 2),
 				{ httpMetadata: { contentType: 'application/json' } },
 			);
 
-			if (validation.valid) {
-				await saveWineEvent(env.DB, {
+		if (validation.valid) {
+			const saved = await saveWineEvent(env.DB, {
+				intakeId: asset.intakeId,
+				assetId: asset.assetId,
+				sourceType: 'line_image',
+				sourceMessageId: message.messageId,
+				relatedAssets: lineText ? [{
 					intakeId: asset.intakeId,
-					assetId: asset.assetId,
-					title: eventTitle,
-					event: normalizedEvent,
-				}, getOptionalAiEventResolutionOptions(env));
-			} else {
-				eventStatus = 'failed';
-				validationErrors = validation.errors;
-			}
+					assetId: lineText.assetId,
+					assetRole: 'other',
+					sourceType: 'line_text',
+					sourceMessageId: lineText.messageId,
+					textContent: lineText.text,
+				}] : [],
+				title: eventTitle,
+				event: normalizedEvent,
+			}, getOptionalAiEventResolutionOptions(env));
+			if (lineText) await markLineTextContextLinked(env.DB, lineText.messageId, saved.id);
+		} else {
+			eventStatus = 'failed';
+			validationErrors = validation.errors;
 		}
 	}
 
 	if (!message.pushTarget) return;
 	const finalText = eventStatus === 'completed'
-		? `Stored, OCR completed, event validated, and database updated: ${eventTitle}. Intake: ${asset.intakeId}`
+		? `Stored, extraction completed, event validated, and database updated: ${eventTitle}. Intake: ${asset.intakeId}`
 		: validationErrors.length > 0
 			? `Stored, but event validation failed: ${validationErrors.join(', ')}. Intake: ${asset.intakeId}`
-			: `Stored, but OCR or event extraction failed. Intake: ${asset.intakeId}`;
+			: `Stored, but source extraction failed. Intake: ${asset.intakeId}`;
 
 	// The status notification is best-effort. A LINE API error must not cause
 	// Cloudflare Queues to process the completed intake again.
@@ -141,16 +183,50 @@ async function acknowledgeAndQueueImage(event: LineImageMessageEvent, env: Worke
 		messageId: event.message.id,
 		lineUserId: event.source?.userId,
 		pushTarget: getPushTarget(event),
+		conversationKey: buildLineConversationKey(event.source) ?? undefined,
 		receivedAt: new Date(event.timestamp ?? Date.now()).toISOString(),
 	} satisfies ImageProcessingMessage);
 
 	await replyToLine(event.replyToken, 'Image received – queued for processing', env.LINE_CHANNEL_ACCESS_TOKEN);
 }
 
-async function processWebhookEvents(body: LineWebhookPayload, env: WorkerEnv): Promise<void> {
+function formatCorrelationWindow(seconds: number | null): string {
+	if (seconds === null) return 'soon';
+	if (seconds % 60 === 0) {
+		const minutes = seconds / 60;
+		return `within ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
+	}
+	return `within ${seconds} seconds`;
+}
+
+export async function processWebhookEvents(body: LineWebhookPayload, env: WorkerEnv): Promise<void> {
 	for (const event of body.events ?? []) {
 		if (isImageMessageEvent(event)) await acknowledgeAndQueueImage(event, env);
-		else if (isTextMessageEvent(event)) await replyToLine(event.replyToken, routeCommand(event.message.text), env.LINE_CHANNEL_ACCESS_TOKEN);
+		else if (isTextMessageEvent(event)) {
+			if (isKnownCommand(event.message.text)) {
+				await replyToLine(event.replyToken, routeCommand(event.message.text), env.LINE_CHANNEL_ACCESS_TOKEN);
+				continue;
+			}
+
+			const conversationKey = buildLineConversationKey(event.source);
+			if (event.message.text.trim() && conversationKey) {
+				await storePendingLineText(env.DB, {
+					messageId: event.message.id,
+					conversationKey,
+					text: event.message.text,
+					receivedAt: new Date(event.timestamp ?? Date.now()).toISOString(),
+				});
+				const window = formatCorrelationWindow(getOptionalLineTextContextWindowSeconds(env));
+				await replyToLine(
+					event.replyToken,
+					`Event details received. Send the related flyer image ${window}.`,
+					env.LINE_CHANNEL_ACCESS_TOKEN,
+				);
+				continue;
+			}
+
+			await replyToLine(event.replyToken, routeCommand(event.message.text), env.LINE_CHANNEL_ACCESS_TOKEN);
+		}
 	}
 }
 

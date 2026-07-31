@@ -128,6 +128,20 @@ function firstPhone(values: Array<string | null>): string | null {
 	return null;
 }
 
+function normalizeStringList(values: string[]): string[] {
+	const normalized: string[] = [];
+	const seen = new Set<string>();
+	for (const value of values) {
+		const display = (normalizeUtf8Text(value) ?? value).trim();
+		if (!display) continue;
+		const canonical = display.normalize('NFKC').toLocaleLowerCase('en-US').replace(/\s+/g, ' ');
+		if (seen.has(canonical)) continue;
+		seen.add(canonical);
+		normalized.push(display);
+	}
+	return normalized;
+}
+
 export function normalizeWineEvent(event: {
 	isWineEvent: boolean;
 	date: string | null;
@@ -139,6 +153,7 @@ export function normalizeWineEvent(event: {
 	bookingUrl: string | null;
 	notes: string[];
 	wines: string[];
+	wineRegions?: string[];
 }): NormalizedWineEvent {
 	const venue = normalizeUtf8Text(event.venue);
 	const contact = normalizeUtf8Text(event.contact);
@@ -154,8 +169,8 @@ export function normalizeWineEvent(event: {
 		venue,
 		contactEmail: firstEmail(contactSources),
 		contactPhone: firstPhone(contactSources),
-		wines: event.wines.map((wine) => normalizeUtf8Text(wine) ?? wine),
-		wineRegions: [],
+		wines: normalizeStringList(event.wines),
+		wineRegions: normalizeStringList(event.wineRegions ?? []),
 		isWineEvent: event.isWineEvent,
 	};
 }

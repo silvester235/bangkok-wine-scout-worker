@@ -11,6 +11,11 @@ const commands: Record<string, CommandHandler> = {
 	version: versionCommand,
 };
 
+export function isKnownCommand(input: string): boolean {
+	const commandName = input.trim().toLowerCase().replace(/^\//, '');
+	return commandName in commands;
+}
+
 export function routeCommand(input: string): string {
 	const commandName = input.trim().toLowerCase().replace(/^\//, '');
 	const command = commands[commandName];

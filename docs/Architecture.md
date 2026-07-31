@@ -6,7 +6,7 @@ Bangkok Wine Scout collects, analyses, reviews, and publishes wine-event informa
 
 The MVP processes events from two source types:
 
-1. Flyers or images sent through LINE
+1. Text and flyers or images sent through LINE
 2. Event pages discovered on websites
 
 All source types converge on one source-independent event pipeline. LINE and website integrations are adapters; they do not own event business logic.
@@ -33,60 +33,70 @@ Command router
 LINE reply service
 ```
 
-The current implementation covers text commands. Event processing begins with the next milestone: LINE image intake.
+Non-command LINE text and images bypass the command path and enter the durable event-ingestion pipeline.
 
 ## Event ingestion pipeline
 
 ```text
-LINE image / event link / website discovery
+LINE text + image / event link / website discovery
                     |
                     v
              1. Source adapter
                     |
                     v
-              2. Intake record
-               /           \
-              v             v
-     R2 source object     D1 metadata
-              \             /
-               v           v
-              3. Extraction
+        2. Durable source collection
+          /                     \
+         v                       v
+ D1 pending LINE text       R2 image asset
+          \                     /
+           v                   v
+          3. Conservative correlation
                     |
                     v
-             4. Normalization
+              4. Flyer OCR
                     |
                     v
-          5. Validation and scoring
+       5. Labeled extraction context
+       [LINE MESSAGE] + [FLYER OCR]
                     |
                     v
-          6. D1 candidate lookup
+              6. Extraction
                     |
                     v
-       7. Deterministic event matching
+              7. Normalization
+                    |
+                    v
+          8. Validation and scoring
+                    |
+                    v
+          9. D1 candidate lookup
+                    |
+                    v
+       10. Deterministic event matching
           /          |          \
          v           v           v
  high-confidence  ambiguous   low-confidence
      match            |          new event
          |             v              |
-         |       8. AI resolution     |
+         |       11. AI resolution    |
          |          /       \         |
          v         v         v        v
-       9. Existing event  9. New event
+      12. Existing event  12. New event
               \             /
                v           v
-       10. Canonical event merge
+       13. Canonical event merge
                     |
                     v
-             11. Asset linking
+             14. Asset linking
                     |
                     v
-             12. Human review
+             15. Human review
              /        |        \
             v         v         v
          Publish     Edit      Ignore
             |
             v
-       13. Published event
+       16. Published event
             |
             v
        Website / LINE search
@@ -107,9 +117,9 @@ Examples:
 
 Adapters may authenticate requests, fetch provider content, and capture source metadata. They must not extract or publish events.
 
-### 2. Intake
+### 2. Durable source collection and correlation
 
-The intake service creates an `event_intakes` record before expensive processing begins.
+The intake layer stores original images in R2 and non-command LINE text in D1 before expensive processing begins. Text is keyed by LINE message ID for idempotency and is not held in process memory.
 
 Responsibilities:
 
@@ -121,11 +131,15 @@ Responsibilities:
 - Make repeated delivery idempotent where a stable source reference exists
 - Move the intake from `received` to `stored`
 
+When LINE does not supply an explicit parent relationship, an image atomically claims the newest unconsumed text from the same conservative conversation identity within `LINE_TEXT_CONTEXT_WINDOW_SECONDS` (600 seconds by default). User chats use the user ID; group and room keys include both the conversation ID and sender ID. Expired or consumed text is not reused for another image. Invalid window configuration disables correlation for that event and does not stop image ingestion.
+
 A successful LINE acknowledgement means the source was accepted and stored. It does not mean the event was extracted, approved, or published.
 
-### 3. Extraction
+### 3–6. OCR, extraction context, and extraction
 
-The extraction service reads preserved source material and produces a provider-neutral structured proposal.
+OCR remains responsible only for image-to-text conversion. The extraction boundary then builds and persists an `EventExtractionContext` with separate `sourceText` and `ocrText` fields plus a deterministic `combinedText`. Present sources are labeled `[LINE MESSAGE]` and `[FLYER OCR]`; missing sources do not create empty sections.
+
+The extraction service reads that preserved, labeled context and produces a provider-neutral structured proposal. AI receives both sources with explicit boundaries and instructions to use both as evidence, avoid invention, and retain uncertainty when they conflict. OCR-only ingestion remains supported.
 
 Typical fields:
 
@@ -141,7 +155,7 @@ Typical fields:
 
 The raw AI or parser response is stored unchanged for troubleshooting and later reprocessing.
 
-### 4. Normalization
+### 7. Normalization
 
 Normalization converts extracted values into canonical event fields without inventing missing information.
 
@@ -156,7 +170,7 @@ Examples:
 
 Normalization is deterministic and independent of the AI provider.
 
-### 5. Validation and confidence
+### 8. Validation and confidence
 
 Validation checks whether the proposal is usable and identifies fields requiring review.
 
@@ -171,11 +185,11 @@ Checks include:
 
 The pipeline records overall confidence and may record field-level confidence with source evidence. Low confidence never causes automatic publication.
 
-### 6. D1 candidate lookup
+### 9. D1 candidate lookup
 
 Before insertion, D1 returns a bounded set of plausible candidates using event date, venue, and title. Exact-date candidates are ranked first; nearby dates may be considered so the deterministic matcher can reject or assess them.
 
-### 7. Deterministic event matching
+### 10. Deterministic event matching
 
 The pure Event Matcher compares the normalized proposal with D1 candidates using date, title, venue, and start time. It remains the primary decision engine. High-confidence matches reuse an existing event, and low-confidence results create a new event without calling AI.
 
@@ -190,19 +204,19 @@ Signals include:
 
 When an existing event matches, incoming values fill only missing fields. Existing non-empty information is never overwritten.
 
-### 8. AI event resolution
+### 11. AI event resolution
 
 Only deterministic confidence strictly between the configured low and high thresholds is ambiguous enough to invoke AI. The resolver receives the incoming event and no more than five minimal D1 candidates, requests schema-constrained JSON, and validates the decision, confidence, and candidate ID. It prefers a new event when uncertain.
 
 Timeouts, provider failures, malformed JSON, and invalid candidate IDs are logged and fall back to the deterministic result; AI resolution never blocks ingestion.
 
-### 9. Existing or new event
+### 12. Existing or new event
 
 A successful pipeline run creates or updates one canonical draft event linked to its intake.
 
 The draft contains normalized fields, review flags, confidence data, and duplicate candidates. Reprocessing the same intake updates the draft rather than creating uncontrolled copies.
 
-### 10. Canonical event merge
+### 13. Canonical event merge
 
 Event resolution answers: “Does this incoming asset belong to an existing event?” Canonical event merge is a separate deterministic stage that answers: “Which incoming fields may safely enrich the canonical event?”
 
@@ -210,11 +224,11 @@ For an existing event, the repository loads the complete canonical record and pa
 
 Conflicts are returned by the merge service and logged by field name; they are not persisted in D1. A new event initializes its canonical data directly from the normalized incoming event.
 
-### 11. Asset linking
+### 14. Asset linking
 
-Every incoming asset is linked exactly once to the resolved event. Multiple flyers and supporting assets—such as menus, reminders, social posts, maps, and other material—may belong to one canonical event.
+Every incoming asset is linked exactly once to the resolved event. Correlated text is retained as a `line_text` asset with its original message ID and text content; the flyer remains a separate `line_image` asset. Multiple text messages, flyers, menus, reminders, social posts, maps, and other material may belong to one canonical event.
 
-### 12. Human review
+### 15. Human review
 
 The review dashboard presents the original source beside the structured draft.
 
@@ -228,7 +242,7 @@ Allowed decisions:
 
 AI extraction is advisory. A human review decision is the publication boundary.
 
-### 13. Publication
+### 16. Publication
 
 Publication changes an approved event to `published` and records `published_at`.
 

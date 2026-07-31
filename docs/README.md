@@ -37,10 +37,13 @@ LINE and website integrations are source adapters. They share the same downstrea
 
 ## Current status
 
-Version: `v0.5.0`
+Version: `v0.6.0`
 
 Implemented:
 
+- D1-backed correlation of nearby LINE text with subsequent flyer images
+- Labeled extraction contexts that preserve LINE text and flyer OCR separately
+- Idempotent `line_text` and `line_image` source assets linked to one canonical event
 - LINE Official Account integration
 - Cloudflare Worker webhook
 - LINE signature verification and replies
@@ -48,12 +51,7 @@ Implemented:
 - Commands: `help`, `about`, `version`, `ping`
 - Modular route, command, and LINE service boundaries
 
-Next milestone:
-
-- Recognize LINE image events
-- Create durable event intake records
-- Store original flyers in Cloudflare R2
-- Acknowledge successful storage without implying publication
+The ingestion pipeline currently supports OCR-only flyers and fused LINE-text-plus-flyer submissions.
 
 ## Core rules
 

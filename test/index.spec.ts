@@ -21,7 +21,7 @@ describe('Bangkok Wine Scout worker', () => {
 		expect(response.status).toBe(200);
 		expect(body.status).toBe('ok');
 		expect(body.service).toBe('Bangkok Wine Scout');
-		expect(body.version).toBe('0.5.0');
+		expect(body.version).toBe('0.6.0');
 		expect(Number.isNaN(Date.parse(body.timestamp))).toBe(false);
 	});
 
