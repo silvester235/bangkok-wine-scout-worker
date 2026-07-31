@@ -90,7 +90,7 @@ function scoreCandidate(incoming: MatchableEvent, candidate: ExistingEventCandid
 		available += 0.25;
 		const similarity = tokenSimilarity(incomingTitle, candidateTitle);
 		earned += 0.25 * similarity;
-		if (similarity >= 0.75) {
+		if (similarity >= 0.5) {
 			positiveSignals += 1;
 			reasons.push(similarity === 1 ? 'same title' : 'similar title');
 		} else if (similarity < 0.3) {
@@ -113,10 +113,11 @@ function scoreCandidate(incoming: MatchableEvent, candidate: ExistingEventCandid
 		return { eventId: candidate.id, confidence: 0, reasons: ['no comparable fields'], positiveSignals: 0 };
 	}
 
-	// Normalize over fields present on both records, then reduce confidence when
-	// little evidence is available. A single matching field must never auto-merge.
+	// Two substantial matching fields (for example title + venue on a menu
+	// flyer) provide enough evidence. A single shared field remains capped below
+	// the automatic match threshold and can never auto-merge by itself.
 	const normalizedSimilarity = earned / available;
-	const evidenceCoverage = Math.min(1, available / 0.65);
+	const evidenceCoverage = Math.min(1, available / 0.5);
 	const confidence = Number((normalizedSimilarity * evidenceCoverage).toFixed(4));
 
 	return { eventId: candidate.id, confidence, reasons, positiveSignals };
