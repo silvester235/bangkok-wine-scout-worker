@@ -139,7 +139,9 @@ A successful LINE acknowledgement means the source was accepted and stored. Publ
 
 OCR remains responsible only for image-to-text conversion. The extraction boundary then builds and persists an `EventExtractionContext` with separate `sourceText` and `ocrText` fields plus a deterministic `combinedText`. Present sources are labeled `[LINE MESSAGE]` and `[FLYER OCR]`; missing sources do not create empty sections.
 
-The extraction service reads that preserved, labeled context and produces a provider-neutral structured proposal. AI receives both sources with explicit boundaries and instructions to use both as evidence, avoid invention, and retain uncertainty when they conflict. OCR-only ingestion remains supported.
+The extraction service reads that preserved, labeled context and attempts to produce a provider-neutral structured proposal. AI receives both sources with explicit boundaries and instructions to use both as evidence, avoid invention, and retain uncertainty when they conflict. OCR-only ingestion remains supported. Empty OCR, AI timeouts, invalid JSON, schema violations, and other recoverable extraction failures are retained as diagnostic artifacts and route to fallback publication rather than stopping ingestion.
+
+Fallback publication creates a minimal canonical event titled `Wine Event`. Its date, time, venue, price, booking and contact fields remain `NULL`; wines and regions remain `[]`. The stable intake and asset identifiers feed the existing unique slug generation, and the stored flyer is linked as a public `flyer` asset.
 
 Typical fields:
 
@@ -183,7 +185,7 @@ Checks include:
 - Venue and contact details were detected
 - Published dates are not silently inferred from unrelated flyer text
 
-Warnings use messages such as `Date not detected`, `Booking URL not detected`, and `Published with partial metadata`. Missing scalar values remain `NULL`, and missing collections are stored as `[]`; placeholder text is never invented. Only technical failures—such as corrupt input, failed image/OCR/extraction storage, or a failed D1 write—stop publication.
+Warnings use messages such as `Date not detected`, `Booking URL not detected`, and `Published with partial metadata`. Missing scalar values remain `NULL`, and missing collections are stored as `[]`. `Wine Event` is used only as the defined fallback title when extraction produces no event. Only integrity failures—such as a failed LINE image download, R2 write, D1 write, asset link, invalid queue message, or missing required binding—stop publication.
 
 ### 9. D1 candidate lookup
 
@@ -288,6 +290,7 @@ Publication is automatic after technical processing succeeds. Later operator-dri
 - Intake creation is idempotent for stable source references.
 - Original source material is immutable after storage.
 - A failed stage preserves enough metadata to retry safely.
+- A retry resumes an R2-stored image when no D1 asset link exists yet.
 - Reprocessing must not create duplicate events for the same intake.
 - Provider-specific retries belong inside provider services.
 - Logs include intake and event IDs but never secrets or unnecessary personal data.

@@ -42,6 +42,13 @@ export interface SaveWineEventResult {
 	duplicate: boolean;
 }
 
+export async function findEventIdByAssetId(db: D1Database, assetId: string): Promise<string | null> {
+	const row = await db.prepare(
+		'SELECT event_id FROM event_assets WHERE asset_id = ? LIMIT 1',
+	).bind(assetId).first<{ event_id: string }>();
+	return row?.event_id ?? null;
+}
+
 export interface AiEventResolutionOptions {
 	ai: Ai;
 	resolver: AiEventResolverConfig;
