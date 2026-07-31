@@ -82,7 +82,6 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 
 	let eventStatus: 'completed' | 'failed' | 'skipped' = 'skipped';
 	let eventTitle: string | null = null;
-	let validationErrors: string[] = [];
 
 	const ocr = await extractAndStoreOcr(env.AI, env.EVENT_INTAKES, {
 		intakeId: asset.intakeId,
@@ -125,7 +124,7 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 		console.log('NORMALIZED WINES:', JSON.stringify(normalizedEvent.wines));
 		console.log('EVENT VALIDATION:', JSON.stringify(validation));
 
-		// Persist both artifacts before deciding whether the event is allowed into D1.
+		// Persist both artifacts before publishing the normalized event to D1.
 		await env.EVENT_INTAKES.put(
 			`intakes/${asset.intakeId}/assets/${asset.assetId}/event-normalized.json`,
 			JSON.stringify(normalizedEvent, null, 2),
@@ -138,8 +137,7 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 				{ httpMetadata: { contentType: 'application/json' } },
 			);
 
-		if (validation.valid) {
-			const saved = await saveWineEvent(env.DB, {
+		const saved = await saveWineEvent(env.DB, {
 				intakeId: asset.intakeId,
 				assetId: asset.assetId,
 				sourceType: 'line_image',
@@ -157,20 +155,21 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 				}] : [],
 				title: eventTitle,
 				event: normalizedEvent,
-			}, getOptionalAiEventResolutionOptions(env));
-			if (lineText) await markLineTextContextLinked(env.DB, lineText.messageId, saved.id);
-		} else {
-			eventStatus = 'failed';
-			validationErrors = validation.errors;
-		}
+		}, getOptionalAiEventResolutionOptions(env));
+		if (lineText) await markLineTextContextLinked(env.DB, lineText.messageId, saved.id);
+		console.log('EVENT PUBLICATION', JSON.stringify({
+			eventId: saved.id,
+			message: validation.warnings.length > 0
+				? 'Published with partial metadata'
+				: 'Published with complete detected metadata',
+			warnings: validation.warnings,
+		}));
 	}
 
 	if (!message.pushTarget) return;
 	const finalText = eventStatus === 'completed'
-		? `Stored, extraction completed, event validated, and database updated: ${eventTitle}. Intake: ${asset.intakeId}`
-		: validationErrors.length > 0
-			? `Stored, but event validation failed: ${validationErrors.join(', ')}. Intake: ${asset.intakeId}`
-			: `Stored, but source extraction failed. Intake: ${asset.intakeId}`;
+		? `Stored, extraction completed, and event published${eventTitle ? `: ${eventTitle}` : ''}. Intake: ${asset.intakeId}`
+		: `Stored, but source extraction failed. Intake: ${asset.intakeId}`;
 
 	// The status notification is best-effort. A LINE API error must not cause
 	// Cloudflare Queues to process the completed intake again.

@@ -213,8 +213,8 @@ Potential duplicates should be shown during review instead of being deleted auto
 - Store original assets in R2, not as database blobs.
 - Never combine multiple flyers into one destructive flattened image.
 - Keep raw AI output and asset-level evidence for troubleshooting and reprocessing.
-- Do not publish an event automatically during the MVP.
-- Reset a published event to `draft` and clear `published_at` when ingestion materially changes a public canonical field.
+- Publish an event automatically after its technical processing and database write succeed.
+- Keep published events published when later ingestion enriches a public canonical field.
 - Keep newly linked assets private until an explicit review decision marks them public.
 
 ## Initial migration order

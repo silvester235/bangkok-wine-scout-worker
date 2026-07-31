@@ -66,7 +66,7 @@ LINE text + image / event link / website discovery
               7. Normalization
                     |
                     v
-          8. Validation and scoring
+       8. Informational metadata checks
                     |
                     v
           9. D1 candidate lookup
@@ -90,13 +90,10 @@ LINE text + image / event link / website discovery
              14. Asset linking
                     |
                     v
-             15. Human review
-             /        |        \
-            v         v         v
-         Publish     Edit      Ignore
-            |
-            v
-       16. Published event
+             15. Publication
+                    |
+                    v
+       16. Optional enrichment
             |
             v
        Public Event API
@@ -136,7 +133,7 @@ Responsibilities:
 
 When LINE does not supply an explicit parent relationship, an image atomically claims the newest unconsumed text from the same conservative conversation identity within `LINE_TEXT_CONTEXT_WINDOW_SECONDS` (600 seconds by default). User chats use the user ID; group and room keys include both the conversation ID and sender ID. Expired or consumed text is not reused for another image. Invalid window configuration disables correlation for that event and does not stop image ingestion.
 
-A successful LINE acknowledgement means the source was accepted and stored. It does not mean the event was extracted, approved, or published.
+A successful LINE acknowledgement means the source was accepted and stored. Publication follows automatically only after the remaining technical processing and persistence steps succeed.
 
 ### 3–6. OCR, extraction context, and extraction
 
@@ -173,20 +170,20 @@ Examples:
 
 Normalization is deterministic and independent of the AI provider.
 
-### 8. Validation and confidence
+### 8. Informational metadata checks
 
-Validation checks whether the proposal is usable and identifies fields requiring review.
+Metadata checks identify fields that were not detected or could not be normalized. They produce informational warnings and never reject a technically successful flyer.
 
 Checks include:
 
-- Required title is present
-- Date and time are parseable
-- End time is not before start time
-- Price values are plausible
-- URLs are syntactically valid
+- Title was detected
+- Date and time were detected and parseable
+- Price was detected and plausible
+- Booking URL was detected and syntactically valid
+- Venue and contact details were detected
 - Published dates are not silently inferred from unrelated flyer text
 
-The pipeline records overall confidence and may record field-level confidence with source evidence. Low confidence never causes automatic publication.
+Warnings use messages such as `Date not detected`, `Booking URL not detected`, and `Published with partial metadata`. Missing scalar values remain `NULL`, and missing collections are stored as `[]`; placeholder text is never invented. Only technical failures—such as corrupt input, failed image/OCR/extraction storage, or a failed D1 write—stop publication.
 
 ### 9. D1 candidate lookup
 
@@ -215,9 +212,9 @@ Timeouts, provider failures, malformed JSON, and invalid candidate IDs are logge
 
 ### 12. Existing or new event
 
-A successful pipeline run creates or updates one canonical draft event linked to its intake.
+A successful pipeline run creates or updates one canonical published event linked to its intake.
 
-The draft contains normalized fields, review flags, confidence data, and duplicate candidates. Reprocessing the same intake updates the draft rather than creating uncontrolled copies.
+The event contains all normalized fields that were detected. Reprocessing the same intake updates the event rather than creating uncontrolled copies.
 
 ### 13. Canonical event merge
 
@@ -227,33 +224,21 @@ For an existing event, the repository loads the complete canonical record and pa
 
 Conflicts are returned by the merge service and logged by field name; they are not persisted in D1. A new event initializes its canonical data directly from the normalized incoming event.
 
-When a merge actually changes any public canonical field on an event that is currently published, the repository resets the event to `draft` and clears `published_at`. This protects the public API from unreviewed enrichment. Conflicts that preserve the existing value and merges that only link an asset do not trigger this reset.
+Enrichment never returns an event to draft. The repository preserves its original publication timestamp and keeps the event published while filling previously missing canonical fields. Conflicting non-empty values remain protected by the deterministic merge rules.
 
 ### 14. Asset linking
 
 Every incoming asset is linked exactly once to the resolved event. New assets are private by default and require an explicit `is_public` decision. Correlated text is always retained privately as a `line_text` asset with its original message ID and text content; the flyer remains a separate private `line_image` asset until reviewed. Multiple text messages, flyers, menus, reminders, social posts, maps, and other material may belong to one canonical event.
 
-### 15. Human review
+### 15. Publication
 
-The review dashboard presents the original source beside the structured draft.
+After technical processing succeeds, the event is stored with `status = 'published'` and a non-null `published_at`. Business metadata completeness and wine-event classification are not publication gates.
 
-Allowed decisions:
+### 16. Optional enrichment
 
-- Edit fields
-- Publish
-- Ignore
-- Mark a published event as cancelled or sold out
-- Re-run extraction after a processing failure or model improvement
+Later flyer assets, automated jobs, or human review may enrich missing fields. Enrichment is optional and does not interrupt publication. Operators may still edit fields, mark an event cancelled or sold out, or re-run extraction after a technical failure or model improvement.
 
-AI extraction is advisory. A human review decision is the publication boundary.
-
-### 16. Publication
-
-Publication changes an approved event to `published` and records `published_at`.
-
-Published events become available to public consumers such as the website and LINE event search. Publication does not overwrite the original source, raw extraction, or review history.
-
-An event is public only when `status = 'published'` and `published_at` is non-null. Validation success, wine-event classification, or simple existence in D1 never implies publication. A slug is assigned when the canonical draft is first created and is not rewritten by later merges.
+Published events become available to public consumers such as the website and LINE event search. Publication does not overwrite the original source, raw extraction, or review history. A slug is assigned when the canonical event is first created and is not rewritten by later merges. The public API schema is unchanged; consumers simply receive nullable values for metadata that was not detected.
 
 ## Public delivery pipeline
 
@@ -289,14 +274,12 @@ failed -> analysing
 ### Event states
 
 ```text
-draft -> needs_review -> published
-   |          |
-   +----------+-> ignored
+technical processing -> published
 published -> sold_out
 published -> cancelled
 ```
 
-State changes must be explicit and validated. Invalid transitions return a conflict rather than silently changing data.
+Publication is automatic after technical processing succeeds. Later operator-driven state changes remain explicit and validated.
 
 ## Reliability rules
 
@@ -305,7 +288,7 @@ State changes must be explicit and validated. Invalid transitions return a confl
 - Intake creation is idempotent for stable source references.
 - Original source material is immutable after storage.
 - A failed stage preserves enough metadata to retry safely.
-- Reprocessing must not create duplicate draft events for the same intake.
+- Reprocessing must not create duplicate events for the same intake.
 - Provider-specific retries belong inside provider services.
 - Logs include intake and event IDs but never secrets or unnecessary personal data.
 
@@ -331,7 +314,7 @@ Stores original event flyers and future source artifacts. D1 stores object keys,
 
 Coordinates AI and parser providers and returns a shared extraction result. Provider-specific response formats remain inside adapters.
 
-### Normalization and validation services
+### Normalization and metadata-check services
 
 Convert extracted values into canonical event fields, validate them, and produce review flags and confidence metadata.
 
@@ -360,5 +343,5 @@ Provides read-only published event lists, slug-based detail, asset summaries, an
 - D1 is the system of record for workflow state and canonical event data.
 - Only reviewed events may be published.
 - AI output is treated as a proposal, never as authoritative data.
-- Public consumers read published events, not raw intakes or unreviewed drafts.
+- Public consumers read published events, not raw intakes or failed technical processing artifacts.
 - Bottle recognition and cellar management are outside the current scope.

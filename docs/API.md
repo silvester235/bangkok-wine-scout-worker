@@ -112,7 +112,7 @@ Cache-Control: public, max-age=3600, stale-while-revalidate=86400
 
 Missing objects, private assets, text assets, and assets belonging to unpublished events return `404`.
 
-If ingestion materially enriches a published event—title, date, time, price, venue, contact details, wines, wine regions, or wine-event classification—the event returns to `draft` and `published_at` is cleared. It requires review and explicit republication. A merge that only links another asset leaves an otherwise unchanged published event published; the new asset remains private until explicitly approved.
+Ingestion publishes every technically successful event immediately. Later enrichment fills missing canonical fields while preserving `status = 'published'` and the original `published_at`. Newly linked assets remain private until explicitly approved.
 
 ### CORS and methods
 
@@ -126,12 +126,12 @@ Receives LINE Messaging API webhook events. Known commands are routed to the com
 
 Supported commands: `ping`, `help`, `version`, and `about`.
 
-LINE retries are idempotent by message and asset identifiers. A successful intake acknowledgement does not mean an event is published.
+LINE retries are idempotent by message and asset identifiers. A successful intake acknowledgement precedes OCR, extraction, and persistence; the event is published automatically when those technical stages succeed.
 
 ## Security boundary
 
 - The public API has no mutation, admin, review, or publication endpoints.
 - SQL uses prepared statements and fixed query fragments.
 - Public identifiers never grant direct R2-key access.
-- Publication is explicit and is never inferred from validation or extraction.
+- Publication follows successful technical processing; metadata warnings do not block it.
 - Error responses do not include SQL errors or stack traces.

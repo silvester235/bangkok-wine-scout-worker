@@ -40,10 +40,10 @@ describe('validateWineEvent', () => {
 		});
 
 		expect(result.valid).toBe(true);
-		expect(result.errors).not.toContain('Event date is in the past');
+		expect(result.errors).toEqual([]);
 	});
 
-	it('rejects an event in the past in Bangkok', () => {
+	it('does not reject an event in the past', () => {
 		const result = validateWineEvent({
 			title: 'Austrian Wine Masterclass',
 			bookingUrl: 'https://example.com/book',
@@ -51,11 +51,11 @@ describe('validateWineEvent', () => {
 			now: NOW,
 		});
 
-		expect(result.valid).toBe(false);
-		expect(result.errors).toContain('Event date is in the past');
+		expect(result.valid).toBe(true);
+		expect(result.errors).toEqual([]);
 	});
 
-	it('rejects missing required fields', () => {
+	it('treats missing metadata as informational', () => {
 		const result = validateWineEvent({
 			title: null,
 			bookingUrl: null,
@@ -63,12 +63,14 @@ describe('validateWineEvent', () => {
 			now: NOW,
 		});
 
-		expect(result.valid).toBe(false);
-		expect(result.errors).toContain('Missing title');
-		expect(result.errors).toContain('Missing or invalid date');
+		expect(result.valid).toBe(true);
+		expect(result.errors).toEqual([]);
+		expect(result.warnings).toContain('Title not detected');
+		expect(result.warnings).toContain('Date not detected');
+		expect(result.warnings).toContain('Published with partial metadata');
 	});
 
-	it('rejects a non-wine event', () => {
+	it('does not reject an uncertain wine-event classification', () => {
 		const result = validateWineEvent({
 			title: 'Private Dinner Event',
 			bookingUrl: null,
@@ -76,10 +78,11 @@ describe('validateWineEvent', () => {
 			now: NOW,
 		});
 
-		expect(result.errors).toContain('Not classified as a wine event');
+		expect(result.valid).toBe(true);
+		expect(result.warnings).toContain('Wine event classification not detected');
 	});
 
-	it('rejects invalid booking URLs', () => {
+	it('reports invalid booking URLs without rejecting publication', () => {
 		const result = validateWineEvent({
 			title: 'French Wine Dinner',
 			bookingUrl: 'example dot com',
@@ -87,7 +90,9 @@ describe('validateWineEvent', () => {
 			now: NOW,
 		});
 
-		expect(result.errors).toContain('Invalid booking URL');
+		expect(result.valid).toBe(true);
+		expect(result.errors).toEqual([]);
+		expect(result.warnings).toContain('Detected booking URL could not be normalized');
 	});
 
 	it('returns warnings for optional missing data', () => {
@@ -106,11 +111,12 @@ describe('validateWineEvent', () => {
 
 		expect(result.valid).toBe(true);
 		expect(result.warnings).toEqual([
-			'Missing start time',
-			'Missing venue',
-			'Missing price',
-			'Missing booking URL',
-			'Missing contact information',
+			'Time not detected',
+			'Price not detected',
+			'Booking URL not detected',
+			'Venue not detected',
+			'Contact information not detected',
+			'Published with partial metadata',
 		]);
 	});
 });
