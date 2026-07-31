@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseEventDate } from './date-parser';
+import { parseEventDate, parseEventDateFromText } from './date-parser';
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -15,6 +15,7 @@ describe('parseEventDate', () => {
 		['31 Jul 2026', '2026-07-31'],
 		['31 July 2026', '2026-07-31'],
 		['31 JULY 2026', '2026-07-31'],
+		['Friday 31st July 2026', '2026-07-31'],
 		['31 กรกฎาคม 2569', '2026-07-31'],
 	])('normalizes %s to %s', (input, expected) => {
 		expect(parseEventDate(input)).toBe(expected);
@@ -34,6 +35,27 @@ describe('parseEventDate', () => {
 		expect(parseEventDate('31 July')).toBe('2027-07-31');
 	});
 
+	it('uses today when the yearless event date is today in Bangkok', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-07-31T08:00:00Z'));
+
+		expect(parseEventDate('Friday 31st July')).toBe('2026-07-31');
+	});
+
+	it('finds the earliest future year matching the stated weekday', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-08-01T00:00:00Z'));
+
+		expect(parseEventDate('Friday 31st July')).toBe('2032-07-31');
+	});
+
+	it('extracts a yearless date from surrounding OCR text', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-07-31T08:00:00Z'));
+
+		expect(parseEventDateFromText('WINE MASTERCLASS\nFriday 31st July\n6 PM')).toBe('2026-07-31');
+	});
+
 	it.each([
 		null,
 		'',
@@ -42,6 +64,7 @@ describe('parseEventDate', () => {
 		'31/13/2026',
 		'32 July 2026',
 		'31 Foo 2026',
+		'Thursday 31st July 2026',
 	])('returns null for invalid input %s', (input) => {
 		expect(parseEventDate(input)).toBeNull();
 	});
