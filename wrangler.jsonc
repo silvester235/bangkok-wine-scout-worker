@@ -23,7 +23,8 @@
 		"HIGH_THRESHOLD": "0.85",
 		"LOW_THRESHOLD": "0.45",
 		"AI_TIMEOUT_MS": "5000",
-		"LINE_TEXT_CONTEXT_WINDOW_SECONDS": "600"
+		"LINE_TEXT_CONTEXT_WINDOW_SECONDS": "600",
+		"PUBLIC_SITE_ORIGIN": "https://bangkok-wine-scout.silvester235.workers.dev"
 	},
 	"queues": {
 		"producers": [
