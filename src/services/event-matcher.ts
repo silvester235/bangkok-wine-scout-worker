@@ -80,7 +80,7 @@ function scoreCandidate(incoming: MatchableEvent, candidate: ExistingEventCandid
 			positiveSignals += 1;
 			reasons.push(similarity === 1 ? 'same venue' : 'similar venue');
 		} else if (similarity < 0.35) {
-			reasons.push('different venue');
+			return { eventId: candidate.id, confidence: 0, reasons: ['different venue'], positiveSignals: 0 };
 		}
 	}
 
@@ -94,7 +94,7 @@ function scoreCandidate(incoming: MatchableEvent, candidate: ExistingEventCandid
 			positiveSignals += 1;
 			reasons.push(similarity === 1 ? 'same title' : 'similar title');
 		} else if (similarity < 0.3) {
-			reasons.push('different title');
+			return { eventId: candidate.id, confidence: 0, reasons: ['different title'], positiveSignals: 0 };
 		}
 	}
 

@@ -35,7 +35,7 @@ LINE reply service
 
 The current implementation covers text commands. Event processing begins with the next milestone: LINE image intake.
 
-## Target event pipeline
+## Event ingestion pipeline
 
 ```text
 LINE image / event link / website discovery
@@ -59,19 +59,25 @@ LINE image / event link / website discovery
           5. Validation and scoring
                     |
                     v
-          6. Duplicate candidate search
+          6. D1 candidate lookup
                     |
                     v
-              7. Draft event
+       7. Deterministic event matching
+              /             \
+             v               v
+     8. Existing event    8. New event
+              \             /
+               v           v
+              9. Asset linking
                     |
                     v
-              8. Human review
+             10. Human review
              /        |        \
             v         v         v
          Publish     Edit      Ignore
             |
             v
-       9. Published event
+       11. Published event
             |
             v
        Website / LINE search
@@ -156,9 +162,13 @@ Checks include:
 
 The pipeline records overall confidence and may record field-level confidence with source evidence. Low confidence never causes automatic publication.
 
-### 6. Duplicate candidate search
+### 6. D1 candidate lookup
 
-Duplicate detection compares the proposed event with existing drafts and published events.
+Before insertion, D1 returns a bounded set of plausible candidates using event date, venue, and title. Exact-date candidates are ranked first; nearby dates may be considered so the deterministic matcher can reject or assess them.
+
+### 7. Deterministic event matching
+
+The pure Event Matcher compares the normalized proposal with D1 candidates using date, title, venue, and start time. It either selects an existing event ID or decides that a new event is required. This resolution step uses no AI.
 
 Signals include:
 
@@ -169,15 +179,19 @@ Signals include:
 - Matching source reference
 - Matching image hash
 
-The pipeline records possible matches for review. It does not automatically delete or merge records during the MVP.
+When an existing event matches, incoming values fill only missing fields. Existing non-empty information is never overwritten.
 
-### 7. Draft event
+### 8. Existing or new event
 
 A successful pipeline run creates or updates one canonical draft event linked to its intake.
 
 The draft contains normalized fields, review flags, confidence data, and duplicate candidates. Reprocessing the same intake updates the draft rather than creating uncontrolled copies.
 
-### 8. Human review
+### 9. Asset linking
+
+Every incoming asset is linked exactly once to the resolved event. Multiple flyers and supporting assets—such as menus, reminders, social posts, maps, and other material—may belong to one canonical event.
+
+### 10. Human review
 
 The review dashboard presents the original source beside the structured draft.
 
@@ -191,7 +205,7 @@ Allowed decisions:
 
 AI extraction is advisory. A human review decision is the publication boundary.
 
-### 9. Publication
+### 11. Publication
 
 Publication changes an approved event to `published` and records `published_at`.
 

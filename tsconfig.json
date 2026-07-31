@@ -38,6 +38,7 @@
 		"skipLibCheck": true,
 		"types": [
 			"./worker-configuration.d.ts",
+			"@cloudflare/vitest-pool-workers",
 			"node"
 		]
 	},
