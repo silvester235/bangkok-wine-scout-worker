@@ -1,8 +1,11 @@
 import type { NormalizedWineEvent } from './event-normalizer';
 
+export type EventAssetRole = 'main' | 'menu' | 'map' | 'social' | 'other';
+
 export interface StoredWineEventInput {
 	intakeId: string;
 	assetId: string;
+	assetRole?: EventAssetRole;
 	title: string | null;
 	event: NormalizedWineEvent;
 }
@@ -56,6 +59,34 @@ async function findDuplicateEvent(db: D1Database, input: StoredWineEventInput): 
 	return null;
 }
 
+async function linkEventAsset(
+	db: D1Database,
+	eventId: string,
+	input: StoredWineEventInput,
+	linkedAt: string,
+): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO event_assets (
+				event_id,
+				intake_id,
+				asset_id,
+				asset_role,
+				linked_at
+			) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(event_id, asset_id) DO UPDATE SET
+				asset_role = excluded.asset_role`,
+		)
+		.bind(
+			eventId,
+			input.intakeId,
+			input.assetId,
+			input.assetRole ?? 'other',
+			linkedAt,
+		)
+		.run();
+}
+
 export async function saveWineEvent(db: D1Database, input: StoredWineEventInput): Promise<SaveWineEventResult> {
 	const existing = await findDuplicateEvent(db, input);
 	const id = existing?.id ?? `${input.intakeId}:${input.assetId}`;
@@ -91,6 +122,7 @@ export async function saveWineEvent(db: D1Database, input: StoredWineEventInput)
 			)
 			.run();
 
+		await linkEventAsset(db, id, input, createdAt);
 		return { id, duplicate: true };
 	}
 
@@ -139,5 +171,6 @@ export async function saveWineEvent(db: D1Database, input: StoredWineEventInput)
 		)
 		.run();
 
+	await linkEventAsset(db, id, input, createdAt);
 	return { id, duplicate: false };
 }
