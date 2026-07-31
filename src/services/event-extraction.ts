@@ -1,3 +1,5 @@
+import { parseEventDateFromText } from './date-parser';
+
 const EVENT_MODEL = '@cf/meta/llama-3.1-8b-instruct-fast';
 
 export interface ExtractedWineEvent {
@@ -111,6 +113,28 @@ function isExtractedWineEvent(value: unknown): value is ExtractedWineEvent {
 	);
 }
 
+function hasExplicitFourDigitYear(text: string): boolean {
+	return /\b(?:19|20)\d{2}\b/.test(text);
+}
+
+/**
+ * The model is not allowed to invent a year. Enforce that rule after inference:
+ * when OCR has no explicit year, resolve the visible day/month/weekday to the
+ * earliest date that is today or in the future.
+ */
+export function resolveExtractedEventDate(
+	event: ExtractedWineEvent,
+	ocrText: string,
+	referenceDate = new Date(),
+): ExtractedWineEvent {
+	if (hasExplicitFourDigitYear(ocrText)) return event;
+
+	return {
+		...event,
+		date: parseEventDateFromText(ocrText, referenceDate),
+	};
+}
+
 export async function extractAndStoreEvent(
 	ai: Ai,
 	bucket: R2Bucket,
@@ -145,11 +169,12 @@ export async function extractAndStoreEvent(
 			},
 		} as never)) as unknown;
 
-		const event = unwrapResponse(response);
-		if (!isExtractedWineEvent(event)) {
+		const rawEvent = unwrapResponse(response);
+		if (!isExtractedWineEvent(rawEvent)) {
 			throw new Error('Workers AI returned an invalid event structure.');
 		}
 
+		const event = resolveExtractedEventDate(rawEvent, input.ocrText);
 		const result: EventExtractionResult = {
 			schemaVersion: 1,
 			status: 'completed',
