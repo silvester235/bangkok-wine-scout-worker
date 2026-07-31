@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "status": "completed",
+  "intakeId": "line-625132116254654482",
+  "assetId": "line-message-625132116254654482",
+  "model": "@cf/meta/llama-3.1-8b-instruct-fast",
+  "event": {
+    "address": "Lawry’s The Prime Rib Bangkok",
+    "bookingUrl": "sales@four.co.th",
+    "confidence": 1,
+    "contact": "+66 2 012 8410-5",
+    "currency": "THB",
+    "date": null,
+    "endTime": null,
+    "isWineEvent": true,
+    "menu": [
+      "five-course wine pairing dinner"
+    ],
+    "notes": [
+      "featuring the distinguished wines of Château Toumeufeuille and Château La Révérence",
+      "presented by Mr. Luca Bernardinetti, President of GFour Food & Beverage"
+    ],
+    "price": "THB 5,490++ / Person",
+    "startTime": null,
+    "timezone": null,
+    "title": "AN EXCLUSIVE BORDEAUX WINE DINNER",
+    "venue": "Lawry’s The Prime Rib Bangkok",
+    "wines": [
+      "Château Toumeufeuille",
+      "Château La Révérence"
+    ]
+  },
+  "processedAt": "2026-07-30T19:18:14.707Z"
+}

@@ -1,0 +1,14 @@
+{
+  "date": null,
+  "startTime": null,
+  "priceTHB": 5490,
+  "venue": "Lawry’s The Prime Rib Bangkok",
+  "contactEmail": "sales@gfour.co.th",
+  "contactPhone": "+66 2 078 4010-5",
+  "wines": [
+    "Château Châteaufeuille",
+    "Touteuil La Révérence"
+  ],
+  "wineRegions": [],
+  "isWineEvent": true
+}

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "id": "line-message-625131393995505767",
+  "intakeId": "line-625131393995505767",
+  "sourceType": "line_image",
+  "sourceReference": "625131393995505767",
+  "lineUserId": "Ud8f7e0ea161070373a41cee3e9fb8893",
+  "role": "other",
+  "status": "stored",
+  "objectKey": "intakes/line-625131393995505767/assets/line-message-625131393995505767/original",
+  "originalFilename": null,
+  "originalFilenameAvailable": false,
+  "contentType": "image/jpeg",
+  "byteSize": 279343,
+  "contentHash": {
+    "algorithm": "sha256",
+    "value": "faec97d8a1dd2f8b2e5b90de55501480ad37d83e7d61798d246c1aacd7412e69"
+  },
+  "dimensions": {
+    "height": 1714,
+    "width": 1022
+  },
+  "exif": {
+    "present": false
+  },
+  "receivedAt": "2026-07-30T19:10:51.998Z",
+  "storedAt": "2026-07-30T19:10:55.532Z"
+}
