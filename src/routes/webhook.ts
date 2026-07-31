@@ -1,4 +1,4 @@
-import { APP_NAME, VERSION } from '../config';
+import { APP_NAME, getOptionalAiEventResolutionOptions, VERSION } from '../config';
 import { routeCommand } from '../commands/router';
 import { extractAndStoreEvent } from '../services/event-extraction';
 import { normalizeUtf8Text, normalizeWineEvent } from '../services/event-normalizer';
@@ -112,7 +112,7 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 					assetId: asset.assetId,
 					title: eventTitle,
 					event: normalizedEvent,
-				});
+				}, getOptionalAiEventResolutionOptions(env));
 			} else {
 				eventStatus = 'failed';
 				validationErrors = validation.errors;

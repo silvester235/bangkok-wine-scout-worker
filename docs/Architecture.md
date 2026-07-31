@@ -63,21 +63,27 @@ LINE image / event link / website discovery
                     |
                     v
        7. Deterministic event matching
-              /             \
-             v               v
-     8. Existing event    8. New event
+          /          |          \
+         v           v           v
+ high-confidence  ambiguous   low-confidence
+     match            |          new event
+         |             v              |
+         |       8. AI resolution     |
+         |          /       \         |
+         v         v         v        v
+       9. Existing event  9. New event
               \             /
                v           v
-              9. Asset linking
+             10. Asset linking
                     |
                     v
-             10. Human review
+             11. Human review
              /        |        \
             v         v         v
          Publish     Edit      Ignore
             |
             v
-       11. Published event
+       12. Published event
             |
             v
        Website / LINE search
@@ -168,7 +174,7 @@ Before insertion, D1 returns a bounded set of plausible candidates using event d
 
 ### 7. Deterministic event matching
 
-The pure Event Matcher compares the normalized proposal with D1 candidates using date, title, venue, and start time. It either selects an existing event ID or decides that a new event is required. This resolution step uses no AI.
+The pure Event Matcher compares the normalized proposal with D1 candidates using date, title, venue, and start time. It remains the primary decision engine. High-confidence matches reuse an existing event, and low-confidence results create a new event without calling AI.
 
 Signals include:
 
@@ -181,17 +187,23 @@ Signals include:
 
 When an existing event matches, incoming values fill only missing fields. Existing non-empty information is never overwritten.
 
-### 8. Existing or new event
+### 8. AI event resolution
+
+Only deterministic confidence strictly between the configured low and high thresholds is ambiguous enough to invoke AI. The resolver receives the incoming event and no more than five minimal D1 candidates, requests schema-constrained JSON, and validates the decision, confidence, and candidate ID. It prefers a new event when uncertain.
+
+Timeouts, provider failures, malformed JSON, and invalid candidate IDs are logged and fall back to the deterministic result; AI resolution never blocks ingestion.
+
+### 9. Existing or new event
 
 A successful pipeline run creates or updates one canonical draft event linked to its intake.
 
 The draft contains normalized fields, review flags, confidence data, and duplicate candidates. Reprocessing the same intake updates the draft rather than creating uncontrolled copies.
 
-### 9. Asset linking
+### 10. Asset linking
 
 Every incoming asset is linked exactly once to the resolved event. Multiple flyers and supporting assets—such as menus, reminders, social posts, maps, and other material—may belong to one canonical event.
 
-### 10. Human review
+### 11. Human review
 
 The review dashboard presents the original source beside the structured draft.
 
@@ -205,7 +217,7 @@ Allowed decisions:
 
 AI extraction is advisory. A human review decision is the publication boundary.
 
-### 11. Publication
+### 12. Publication
 
 Publication changes an approved event to `published` and records `published_at`.
 
