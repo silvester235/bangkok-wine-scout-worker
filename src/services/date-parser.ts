@@ -38,6 +38,26 @@ const MONTHS: Record<string, number> = {
   ธันวาคม: 12,
 };
 
+const WEEKDAYS: Record<string, number> = {
+  sunday: 0,
+  sun: 0,
+  monday: 1,
+  mon: 1,
+  tuesday: 2,
+  tue: 2,
+  tues: 2,
+  wednesday: 3,
+  wed: 3,
+  thursday: 4,
+  thu: 4,
+  thur: 4,
+  thurs: 4,
+  friday: 5,
+  fri: 5,
+  saturday: 6,
+  sat: 6,
+};
+
 function normalizeYear(year: number): number {
   if (year >= 2500) return year - 543;
   if (year < 100) return 2000 + year;
@@ -45,7 +65,7 @@ function normalizeYear(year: number): number {
 }
 
 function pad(value: number): string {
-  return value.toString().padStart(2, "0");
+  return value.toString().padStart(2, '0');
 }
 
 function iso(year: number, month: number, day: number): string | null {
@@ -62,35 +82,54 @@ function iso(year: number, month: number, day: number): string | null {
   return `${year}-${pad(month)}-${pad(day)}`;
 }
 
-export function parseEventDate(value: string | null): string | null {
-  if (!value) return null;
+function bangkokToday(referenceDate = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Bangkok',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(referenceDate);
 
-  const text = value.trim();
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
 
-  //
-  // ISO
-  //
+function resolveYearlessDate(
+  day: number,
+  month: number,
+  weekday: number | null,
+  referenceDate = new Date(),
+): string | null {
+  const today = bangkokToday(referenceDate);
+  const currentYear = Number(today.slice(0, 4));
 
-  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  // Search several years ahead because a supplied weekday may not match next year.
+  for (let year = currentYear; year <= currentYear + 7; year += 1) {
+    const candidate = iso(year, month, day);
+    if (!candidate || candidate < today) continue;
 
-  if (isoMatch) {
-    return iso(
-      Number(isoMatch[1]),
-      Number(isoMatch[2]),
-      Number(isoMatch[3]),
-    );
+    if (weekday !== null) {
+      const candidateWeekday = new Date(`${candidate}T00:00:00Z`).getUTCDay();
+      if (candidateWeekday !== weekday) continue;
+    }
+
+    return candidate;
   }
 
-  //
-  // DD/MM/YYYY
-  // DD-MM-YYYY
-  // DD.MM.YYYY
-  //
+  return null;
+}
 
-  const numeric = text.match(
-    /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/,
-  );
+export function parseEventDate(value: string | null, referenceDate = new Date()): string | null {
+  if (!value) return null;
 
+  const text = value.trim().replace(/,/g, '');
+
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return iso(Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3]));
+  }
+
+  const numeric = text.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
   if (numeric) {
     return iso(
       normalizeYear(Number(numeric[3])),
@@ -99,41 +138,38 @@ export function parseEventDate(value: string | null): string | null {
     );
   }
 
-  //
-  // 31 Jul 2026
-  // 31 July
-  // 31 กรกฎาคม 2569
-  //
-
+  // Examples: 31 Jul 2026, 31st July, Friday 31st July.
   const words = text.match(
-    /^(\d{1,2})\s+([^\s]+)(?:\s+(\d{2,4}))?$/i,
+    /^(?:(sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat)\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+([^\s]+)(?:\s+(\d{2,4}))?$/i,
   );
 
   if (words) {
-    const day = Number(words[1]);
-
-    const month = MONTHS[words[2].toLowerCase()];
-
+    const weekday = words[1] ? WEEKDAYS[words[1].toLowerCase()] : null;
+    const day = Number(words[2]);
+    const month = MONTHS[words[3].toLowerCase()];
     if (!month) return null;
 
-    let year = words[3]
-      ? normalizeYear(Number(words[3]))
-      : new Date().getUTCFullYear();
+    if (!words[4]) {
+      return resolveYearlessDate(day, month, weekday, referenceDate);
+    }
 
-    let result = iso(year, month, day);
-
+    const result = iso(normalizeYear(Number(words[4])), month, day);
     if (!result) return null;
 
-    if (!words[3]) {
-      const today = new Date().toISOString().slice(0, 10);
-
-      if (result < today) {
-        result = iso(year + 1, month, day);
-      }
+    if (weekday !== null && new Date(`${result}T00:00:00Z`).getUTCDay() !== weekday) {
+      return null;
     }
 
     return result;
   }
 
   return null;
+}
+
+export function parseEventDateFromText(text: string, referenceDate = new Date()): string | null {
+  const match = text.match(
+    /\b(?:(sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat)\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)(?:\s+(\d{2,4}))?\b/i,
+  );
+
+  return match ? parseEventDate(match[0], referenceDate) : null;
 }
