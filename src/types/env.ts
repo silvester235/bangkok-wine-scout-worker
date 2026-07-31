@@ -10,4 +10,5 @@ export interface WorkerEnv {
 	LOW_THRESHOLD: string;
 	AI_TIMEOUT_MS: string;
 	LINE_TEXT_CONTEXT_WINDOW_SECONDS: string;
+	PUBLIC_SITE_ORIGIN?: string;
 }

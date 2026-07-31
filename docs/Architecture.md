@@ -99,6 +99,9 @@ LINE text + image / event link / website discovery
        16. Published event
             |
             v
+       Public Event API
+            |
+            v
        Website / LINE search
 ```
 
@@ -224,9 +227,11 @@ For an existing event, the repository loads the complete canonical record and pa
 
 Conflicts are returned by the merge service and logged by field name; they are not persisted in D1. A new event initializes its canonical data directly from the normalized incoming event.
 
+When a merge actually changes any public canonical field on an event that is currently published, the repository resets the event to `draft` and clears `published_at`. This protects the public API from unreviewed enrichment. Conflicts that preserve the existing value and merges that only link an asset do not trigger this reset.
+
 ### 14. Asset linking
 
-Every incoming asset is linked exactly once to the resolved event. Correlated text is retained as a `line_text` asset with its original message ID and text content; the flyer remains a separate `line_image` asset. Multiple text messages, flyers, menus, reminders, social posts, maps, and other material may belong to one canonical event.
+Every incoming asset is linked exactly once to the resolved event. New assets are private by default and require an explicit `is_public` decision. Correlated text is always retained privately as a `line_text` asset with its original message ID and text content; the flyer remains a separate private `line_image` asset until reviewed. Multiple text messages, flyers, menus, reminders, social posts, maps, and other material may belong to one canonical event.
 
 ### 15. Human review
 
@@ -247,6 +252,28 @@ AI extraction is advisory. A human review decision is the publication boundary.
 Publication changes an approved event to `published` and records `published_at`.
 
 Published events become available to public consumers such as the website and LINE event search. Publication does not overwrite the original source, raw extraction, or review history.
+
+An event is public only when `status = 'published'` and `published_at` is non-null. Validation success, wine-event classification, or simple existence in D1 never implies publication. A slug is assigned when the canonical draft is first created and is not rewritten by later merges.
+
+## Public delivery pipeline
+
+```text
+D1 canonical published events
+          +
+D1-authorized R2 asset metadata
+          |
+          v
+Read-only Public Event API
+          |
+          v
+silvester235/bangkok-wine-scout frontend
+```
+
+The public repository selects only fields required by the frontend. Event lists are bounded and cursor-paginated with stable ordering by event date, start time, and internal ID; the ID remains cursor-only and is not exposed in event resources. Upcoming filtering uses the `Asia/Bangkok` calendar date and includes events occurring today.
+
+Public asset requests accept only an opaque asset ID. D1 first verifies that the asset is explicitly public, has an `image/*` content type and persisted R2 object key, is not `line_text`, and is linked to an explicitly published event; only then may the Worker stream the stored object. Missing R2 metadata is never reconstructed at the public boundary. Source message IDs, intake IDs, OCR artifacts, AI output, and internal confidence values never cross that boundary.
+
+Cross-origin access is granted only when the request origin exactly matches `PUBLIC_SITE_ORIGIN`. Public collection, detail, and asset responses use progressively longer cache lifetimes. Errors are structured JSON and are not assigned public cache headers.
 
 ## Processing states
 
@@ -319,6 +346,10 @@ Allows an administrator to inspect source evidence, edit fields, publish, ignore
 ### D1 database
 
 Stores intakes, canonical events, confidence data, duplicate candidates, and processing metadata.
+
+### Public event API
+
+Provides read-only published event lists, slug-based detail, asset summaries, and authorized R2 streaming for the separate website frontend. It cannot mutate publication state and does not expose private source material.
 
 ## Architectural boundaries
 

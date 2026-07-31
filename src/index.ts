@@ -1,4 +1,4 @@
-import { handleEvents } from './routes/events';
+import { handlePublicApi } from './routes/events';
 import { handleHealth } from './routes/health';
 import { handleHome } from './routes/home';
 import { handleWebhook, processImageMessage, type ImageProcessingMessage } from './routes/webhook';
@@ -17,8 +17,8 @@ export default {
 			return handleHealth();
 		}
 
-		if (request.method === 'GET' && url.pathname === '/api/events') {
-			return handleEvents(env);
+		if (url.pathname.startsWith('/api/')) {
+			return handlePublicApi(request, env);
 		}
 
 		if (request.method === 'POST' && url.pathname === '/webhook') {

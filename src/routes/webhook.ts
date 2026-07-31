@@ -144,6 +144,8 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 				assetId: asset.assetId,
 				sourceType: 'line_image',
 				sourceMessageId: message.messageId,
+				r2ObjectKey: asset.objectKey,
+				contentType: downloaded.contentType,
 				relatedAssets: lineText ? [{
 					intakeId: asset.intakeId,
 					assetId: lineText.assetId,
@@ -151,6 +153,7 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 					sourceType: 'line_text',
 					sourceMessageId: lineText.messageId,
 					textContent: lineText.text,
+					isPublic: false,
 				}] : [],
 				title: eventTitle,
 				event: normalizedEvent,
