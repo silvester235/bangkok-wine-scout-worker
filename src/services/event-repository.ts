@@ -6,6 +6,7 @@ import {
 	type AiResolutionCandidate,
 } from './ai-event-resolver';
 import { mergeEventData, type CanonicalEventData } from './event-merger';
+import { createUniqueEventSlug } from './event-slug';
 
 export type EventAssetRole = 'main' | 'flyer' | 'menu' | 'reminder' | 'social' | 'map' | 'other';
 export type EventSourceType = 'line_image' | 'line_text' | 'other';
@@ -17,6 +18,9 @@ export interface EventSourceAssetInput {
 	sourceType: EventSourceType;
 	sourceMessageId?: string;
 	textContent?: string;
+	isPublic?: boolean;
+	r2ObjectKey?: string;
+	contentType?: string;
 }
 
 export interface StoredWineEventInput {
@@ -26,6 +30,8 @@ export interface StoredWineEventInput {
 	sourceType?: EventSourceType;
 	sourceMessageId?: string;
 	relatedAssets?: EventSourceAssetInput[];
+	r2ObjectKey?: string;
+	contentType?: string;
 	title: string | null;
 	event: NormalizedWineEvent;
 }
@@ -163,8 +169,11 @@ async function linkEventAsset(
 				source_type,
 				source_message_id,
 				text_content,
+				is_public,
+				r2_object_key,
+				content_type,
 				linked_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(asset_id) DO UPDATE SET
 				asset_role = excluded.asset_role`,
 		)
@@ -176,6 +185,9 @@ async function linkEventAsset(
 			asset.sourceType,
 			asset.sourceMessageId ?? null,
 			asset.textContent ?? null,
+			asset.isPublic === false ? 0 : 1,
+			asset.r2ObjectKey ?? null,
+			asset.contentType ?? null,
 			linkedAt,
 		)
 		.run();
@@ -193,6 +205,8 @@ async function linkEventAssets(
 		assetRole: input.assetRole,
 		sourceType: input.sourceType ?? 'line_image',
 		sourceMessageId: input.sourceMessageId,
+		r2ObjectKey: input.r2ObjectKey,
+		contentType: input.contentType,
 	}, linkedAt);
 
 	for (const asset of input.relatedAssets ?? []) await linkEventAsset(db, eventId, asset, linkedAt);
@@ -313,6 +327,12 @@ export async function saveWineEvent(
 		return { id, duplicate: true };
 	}
 
+	const slug = await createUniqueEventSlug(db, {
+		id,
+		title: input.title,
+		venue: input.event.venue,
+		date: input.event.date,
+	});
 	await db
 		.prepare(
 			`INSERT INTO events (
@@ -329,8 +349,9 @@ export async function saveWineEvent(
 				wines_json,
 				wine_regions_json,
 				is_wine_event,
+				slug,
 				created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(asset_id) DO UPDATE SET
 				title = excluded.title,
 				event_date = excluded.event_date,
@@ -357,6 +378,7 @@ export async function saveWineEvent(
 			JSON.stringify(input.event.wines),
 			JSON.stringify(input.event.wineRegions),
 			input.event.isWineEvent ? 1 : 0,
+			slug,
 			createdAt,
 		)
 		.run();

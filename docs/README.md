@@ -29,7 +29,7 @@ LINE and website integrations are source adapters. They share the same downstrea
 | [Architecture.md](Architecture.md) | Current architecture, pipeline stages, states, and reliability rules |
 | [Roadmap.md](Roadmap.md) | Delivery phases aligned with the event pipeline |
 | [Database.md](Database.md) | Cloudflare D1 event data model |
-| [API.md](API.md) | LINE commands, webhook behaviour, and planned event API |
+| [API.md](API.md) | LINE webhook and public event API contracts |
 | [Deployment.md](Deployment.md) | Local development and Cloudflare deployment |
 | [Coding-Standards.md](Coding-Standards.md) | Development and architecture rules |
 | [Decisions/ADR-0001-Command-Router.md](Decisions/ADR-0001-Command-Router.md) | Command-router decision record |
@@ -37,10 +37,13 @@ LINE and website integrations are source adapters. They share the same downstrea
 
 ## Current status
 
-Version: `v0.6.0`
+Version: `v0.7.0`
 
 Implemented:
 
+- Read-only public API for explicitly published events and visual assets
+- Cursor pagination, Bangkok-local upcoming filtering, field filters, CORS, and public caching
+- Stable public event slugs and authorized R2 asset streaming
 - D1-backed correlation of nearby LINE text with subsequent flyer images
 - Labeled extraction contexts that preserve LINE text and flyer OCR separately
 - Idempotent `line_text` and `line_image` source assets linked to one canonical event
@@ -51,7 +54,7 @@ Implemented:
 - Commands: `help`, `about`, `version`, `ping`
 - Modular route, command, and LINE service boundaries
 
-The ingestion pipeline currently supports OCR-only flyers and fused LINE-text-plus-flyer submissions.
+The ingestion pipeline supports OCR-only flyers and fused LINE-text-plus-flyer submissions. The separate `silvester235/bangkok-wine-scout` frontend consumes published data only through the Worker API; it does not access D1 or R2 directly.
 
 ## Core rules
 

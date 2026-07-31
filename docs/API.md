@@ -1,170 +1,135 @@
 # API Specification
 
-## Scope
+Current application version: `v0.7.0`
 
-The current public integration is the LINE webhook. A separate REST API is planned for the dashboard and event publication workflow.
+## Public Event API
 
-Current application version: `v0.6.0`
+The read-only API is the only supported public data boundary for the separate `silvester235/bangkok-wine-scout` frontend. The frontend does not access D1 or R2 directly.
 
-## LINE webhook
-
-Non-command LINE text is preserved as pending event context. When a flyer image from the same conservative conversation identity follows within `LINE_TEXT_CONTEXT_WINDOW_SECONDS` (600 seconds by default), the newest unconsumed text is fused with flyer OCR for one extraction run. Commands continue through the command router and are not stored as event context.
-
-LINE may retry webhook delivery. Text message IDs, image assets, correlation claims, and event source links are idempotent.
-
-### `POST /webhook`
-
-Receives LINE Messaging API webhook events.
-
-Responsibilities:
-
-1. Verify the LINE signature
-2. Parse webhook events
-3. Route known text commands
-4. Persist non-command text as eligible event context
-5. Reply through the LINE Messaging API
-6. Route image messages to the queued event-intake pipeline
-
-### Supported text commands
-
-#### `ping`
-
-Health check.
-
-Expected reply:
+Only rows satisfying both conditions are public:
 
 ```text
-pong
+status = published
+published_at is not null
 ```
 
-#### `help`
+Draft, ignored, rejected, failed, cancelled, or otherwise unpublished events are indistinguishable from missing resources. Public responses never contain intake IDs, source message IDs, raw LINE text, OCR text, AI output, internal confidence, or R2 object keys.
 
-Displays available commands.
+### Response envelopes
 
-#### `version`
-
-Displays the current application version.
-
-#### `about`
-
-Displays a short project description.
-
-Unknown commands should receive a helpful response rather than failing silently.
-
-## LINE text and image flow
-
-When a user sends an image:
-
-1. Persist eligible LINE text in D1 by message and conversation identity.
-2. Read the subsequent image message ID and queue processing.
-3. Download and preserve the image in R2.
-4. Atomically claim recent unconsumed text from the same conversation identity.
-5. OCR the flyer and build a labeled extraction context containing both sources.
-6. Extract, normalize, resolve, and merge one canonical event.
-7. Link the text and image as separate source assets without duplication.
-
-A successful receipt reply confirms storage, not publication.
-
-## Planned dashboard API
-
-The exact route structure may change when the dashboard is implemented. The proposed contract is:
-
-### `GET /api/intakes`
-
-Returns event submissions, filterable by status.
-
-Query examples:
-
-```text
-/api/intakes?status=ready_for_review
-/api/intakes?status=failed
-```
-
-### `GET /api/intakes/{id}`
-
-Returns one intake, its source metadata, original image reference, raw extraction, and associated draft event.
-
-### `POST /api/intakes/{id}/analyse`
-
-Starts or repeats event extraction for one intake.
-
-### `GET /api/events`
-
-Returns events. Public consumers should receive only published events by default.
-
-Suggested query parameters:
-
-- `status`
-- `from`
-- `to`
-- `venue`
-- `q`
-
-### `GET /api/events/{id}`
-
-Returns one event.
-
-### `PATCH /api/events/{id}`
-
-Updates reviewed event fields.
-
-### `POST /api/events/{id}/publish`
-
-Marks a reviewed event as published and records `published_at`.
-
-### `POST /api/events/{id}/ignore`
-
-Marks an event and its intake as ignored.
-
-### `POST /api/events/{id}/cancel`
-
-Marks a previously published event as cancelled.
-
-## Example event response
+Collections:
 
 ```json
 {
-  "id": 42,
-  "title": "California Wine Dinner",
-  "organizer": "Example Organizer",
-  "venueName": "Example Hotel Bangkok",
-  "address": "Bangkok, Thailand",
-  "startsAt": "2026-08-15T19:00:00+07:00",
-  "endsAt": null,
-  "timezone": "Asia/Bangkok",
-  "priceAmount": 3200,
-  "priceCurrency": "THB",
-  "priceText": "THB 3,200 net per person",
-  "bookingUrl": "https://example.com/event",
-  "status": "published",
-  "confidence": 0.94
+  "data": [],
+  "pagination": { "nextCursor": null, "limit": 20 }
 }
 ```
 
-## HTTP responses
+Single resources:
 
-| Status | Meaning |
+```json
+{ "data": {} }
+```
+
+Errors:
+
+```json
+{
+  "error": {
+    "code": "INVALID_CURSOR",
+    "message": "The supplied cursor is invalid."
+  }
+}
+```
+
+### `GET /api/events`
+
+Returns published events ordered by date, start time, and a stable final key. By default, events before today's `Asia/Bangkok` calendar date are excluded; events occurring today are included.
+
+| Parameter | Description |
 |---|---|
-| `200` | Successful read or update |
-| `201` | Resource created |
-| `202` | Analysis accepted for processing |
-| `400` | Invalid request |
-| `401` | Missing or invalid authentication |
-| `404` | Resource not found |
-| `409` | Conflicting state or possible duplicate |
-| `422` | Valid request with unusable event data |
-| `500` | Unexpected server error |
+| `limit` | Page size from 1–50; default 20 |
+| `cursor` | Opaque cursor returned by the previous page |
+| `from` | Inclusive ISO date (`YYYY-MM-DD`) |
+| `to` | Inclusive ISO date (`YYYY-MM-DD`) |
+| `venue` | Case-insensitive venue substring |
+| `region` | Case-insensitive wine-region substring |
+| `wine` | Case-insensitive wine substring |
+| `includePast` | `true` to remove the default upcoming-only boundary |
 
-## Authentication
+Unknown or malformed parameters return `400` with a structured error. Pagination is cursor-based rather than offset-based and queries are always bounded.
 
-- LINE webhooks use LINE signature verification.
-- Dashboard routes must not be public without authentication.
-- Public event-reading endpoints may be introduced later.
+Example:
 
-## API design rules
+```json
+{
+  "data": [
+    {
+      "slug": "austrian-wine-masterclass-attico-2026-07-31",
+      "title": "Austrian Wine Masterclass",
+      "date": "2026-07-31",
+      "startTime": "18:00",
+      "priceTHB": 1290,
+      "venue": "Attico",
+      "wines": ["Example Riesling 2022"],
+      "wineRegions": ["Wachau"],
+      "isWineEvent": true,
+      "heroAsset": {
+        "id": "public-asset-id",
+        "type": "line_image",
+        "role": "flyer",
+        "contentType": "image/jpeg",
+        "url": "/api/assets/public-asset-id",
+        "alt": "Flyer for Austrian Wine Masterclass"
+      },
+      "publishedAt": "2026-07-01T12:00:00.000Z"
+    }
+  ],
+  "pagination": { "nextCursor": null, "limit": 20 }
+}
+```
 
-- Webhook handlers remain thin.
-- Source-specific payloads are converted into shared internal event types.
-- AI extraction never publishes directly.
-- Errors use a consistent JSON structure.
-- Breaking API changes require explicit versioning.
+Cache policy: `public, max-age=60, stale-while-revalidate=300`.
+
+### `GET|HEAD /api/events/:slug`
+
+Returns one published event by stable public slug. The detail includes the public list fields, contact email and phone when present, and public asset summaries. Unknown and unpublished slugs return the same `404` response.
+
+Cache policy: `public, max-age=300, stale-while-revalidate=3600`.
+
+### `GET|HEAD /api/events/:slug/assets`
+
+Returns public visual assets for one published event. Ordering is `main`, `flyer`, `menu`, `reminder`, `social`, `map`, then `other`, followed by link time and asset ID. Private assets and `line_text` content are excluded.
+
+### `GET|HEAD /api/assets/:assetId`
+
+Streams a D1-authorized public visual asset from R2. Clients provide an asset ID, never an R2 key. The Worker verifies that the asset is public and belongs to a published event before resolving its internal object key. Responses include content type, ETag, conditional `If-None-Match` support, and:
+
+```text
+Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+```
+
+Missing objects, private assets, text assets, and assets belonging to unpublished events return `404`.
+
+### CORS and methods
+
+`PUBLIC_SITE_ORIGIN` configures the one allowed frontend origin and must be set to the deployed website origin. Matching requests receive explicit CORS headers and `Vary: Origin`; other origins receive no allow-origin header. Missing or invalid configuration simply grants no cross-origin access and does not affect same-origin or unrelated routes. `OPTIONS` preflight returns `204`. Public resources support `GET` and `HEAD`; other methods return structured `405` with `Allow: GET, HEAD, OPTIONS`. Tests use `https://frontend.example.com` as the documented development origin.
+
+## LINE webhook
+
+### `POST /webhook`
+
+Receives LINE Messaging API webhook events. Known commands are routed to the command router. Non-command, non-empty text with a correlation identity is persisted as pending event context and acknowledged with the configured correlation window. Images are queued, preserved in R2, fused with eligible LINE text, extracted, normalized, resolved, merged, and linked as event assets.
+
+Supported commands: `ping`, `help`, `version`, and `about`.
+
+LINE retries are idempotent by message and asset identifiers. A successful intake acknowledgement does not mean an event is published.
+
+## Security boundary
+
+- The public API has no mutation, admin, review, or publication endpoints.
+- SQL uses prepared statements and fixed query fragments.
+- Public identifiers never grant direct R2-key access.
+- Publication is explicit and is never inferred from validation or extraction.
+- Error responses do not include SQL errors or stack traces.

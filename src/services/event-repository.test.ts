@@ -31,9 +31,13 @@ const schema = `
 		wines_json TEXT NOT NULL DEFAULT '[]',
 		wine_regions_json TEXT NOT NULL DEFAULT '[]',
 		is_wine_event INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'draft',
+		published_at TEXT,
+		slug TEXT,
 		created_at TEXT NOT NULL
 	);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_events_asset_id ON events(asset_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_events_slug ON events(slug) WHERE slug IS NOT NULL;
 	CREATE TABLE IF NOT EXISTS event_assets (
 		event_id TEXT NOT NULL,
 		intake_id TEXT NOT NULL,
@@ -42,6 +46,9 @@ const schema = `
 		source_type TEXT NOT NULL DEFAULT 'line_image',
 		source_message_id TEXT,
 		text_content TEXT,
+		is_public INTEGER NOT NULL DEFAULT 1,
+		r2_object_key TEXT,
+		content_type TEXT,
 		linked_at TEXT NOT NULL,
 		PRIMARY KEY (event_id, asset_id),
 		FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
