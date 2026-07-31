@@ -1,3 +1,5 @@
+import { parseEventDate } from './date-parser';
+
 export interface NormalizedWineEvent {
 	date: string | null;
 	startTime: string | null;
@@ -97,19 +99,6 @@ function normalizePrice(price: string | null): number | null {
 	return match ? Number(match[0]) : null;
 }
 
-function normalizeDate(value: string | null): string | null {
-	if (!value) return null;
-
-	const parsed = new Date(value);
-	if (Number.isNaN(parsed.getTime())) return null;
-
-	const year = parsed.getUTCFullYear();
-	const currentYear = new Date().getUTCFullYear();
-	if (year < currentYear || year > currentYear + 2) return null;
-
-	return parsed.toISOString().slice(0, 10);
-}
-
 function extractEmail(value: string | null): string | null {
 	if (!value) return null;
 	const match = value.match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
@@ -158,7 +147,7 @@ export function normalizeWineEvent(event: {
 	const contactSources = [contact, address, bookingUrl, ...notes];
 
 	return {
-		date: normalizeDate(normalizeUtf8Text(event.date)),
+		date: parseEventDate(normalizeUtf8Text(event.date)),
 		startTime: normalizeUtf8Text(event.startTime),
 		priceTHB: normalizePrice(normalizeUtf8Text(event.price)),
 		venue,
