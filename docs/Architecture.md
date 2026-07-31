@@ -227,9 +227,11 @@ For an existing event, the repository loads the complete canonical record and pa
 
 Conflicts are returned by the merge service and logged by field name; they are not persisted in D1. A new event initializes its canonical data directly from the normalized incoming event.
 
+When a merge actually changes any public canonical field on an event that is currently published, the repository resets the event to `draft` and clears `published_at`. This protects the public API from unreviewed enrichment. Conflicts that preserve the existing value and merges that only link an asset do not trigger this reset.
+
 ### 14. Asset linking
 
-Every incoming asset is linked exactly once to the resolved event. Correlated text is retained as a `line_text` asset with its original message ID and text content; the flyer remains a separate `line_image` asset. Multiple text messages, flyers, menus, reminders, social posts, maps, and other material may belong to one canonical event.
+Every incoming asset is linked exactly once to the resolved event. New assets are private by default and require an explicit `is_public` decision. Correlated text is always retained privately as a `line_text` asset with its original message ID and text content; the flyer remains a separate private `line_image` asset until reviewed. Multiple text messages, flyers, menus, reminders, social posts, maps, and other material may belong to one canonical event.
 
 ### 15. Human review
 
@@ -269,7 +271,7 @@ silvester235/bangkok-wine-scout frontend
 
 The public repository selects only fields required by the frontend. Event lists are bounded and cursor-paginated with stable ordering by event date, start time, and internal ID; the ID remains cursor-only and is not exposed in event resources. Upcoming filtering uses the `Asia/Bangkok` calendar date and includes events occurring today.
 
-Public asset requests accept only an opaque asset ID. D1 first verifies that the asset is public, visual, and linked to an explicitly published event; only then may the Worker resolve the internal R2 key and stream the object. `line_text`, source message IDs, intake IDs, OCR artifacts, AI output, and internal confidence values never cross the public boundary.
+Public asset requests accept only an opaque asset ID. D1 first verifies that the asset is explicitly public, has an `image/*` content type and persisted R2 object key, is not `line_text`, and is linked to an explicitly published event; only then may the Worker stream the stored object. Missing R2 metadata is never reconstructed at the public boundary. Source message IDs, intake IDs, OCR artifacts, AI output, and internal confidence values never cross that boundary.
 
 Cross-origin access is granted only when the request origin exactly matches `PUBLIC_SITE_ORIGIN`. Public collection, detail, and asset responses use progressively longer cache lifetimes. Errors are structured JSON and are not assigned public cache headers.
 

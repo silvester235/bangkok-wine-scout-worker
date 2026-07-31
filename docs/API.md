@@ -100,17 +100,19 @@ Cache policy: `public, max-age=300, stale-while-revalidate=3600`.
 
 ### `GET|HEAD /api/events/:slug/assets`
 
-Returns public visual assets for one published event. Ordering is `main`, `flyer`, `menu`, `reminder`, `social`, `map`, then `other`, followed by link time and asset ID. Private assets and `line_text` content are excluded.
+Returns explicitly public image assets for one published event. Ordering is `main`, `flyer`, `menu`, `reminder`, `social`, `map`, then `other`, followed by link time and asset ID. New assets are private by default. An asset is returned only when `is_public = 1`, it is not `line_text`, its stored content type is `image/*`, and it has a persisted R2 object key.
 
 ### `GET|HEAD /api/assets/:assetId`
 
-Streams a D1-authorized public visual asset from R2. Clients provide an asset ID, never an R2 key. The Worker verifies that the asset is public and belongs to a published event before resolving its internal object key. Responses include content type, ETag, conditional `If-None-Match` support, and:
+Streams a D1-authorized public image asset from R2. Clients provide an asset ID, never an R2 key. The Worker verifies explicit asset publication, image content type, persisted R2 key, and ownership by a published event before reading R2. Responses include content type, ETag, and conditional `If-None-Match` support for single, multiple, weak, and wildcard validators, plus:
 
 ```text
 Cache-Control: public, max-age=3600, stale-while-revalidate=86400
 ```
 
 Missing objects, private assets, text assets, and assets belonging to unpublished events return `404`.
+
+If ingestion materially enriches a published event—title, date, time, price, venue, contact details, wines, wine regions, or wine-event classification—the event returns to `draft` and `published_at` is cleared. It requires review and explicit republication. A merge that only links another asset leaves an otherwise unchanged published event published; the new asset remains private until explicitly approved.
 
 ### CORS and methods
 

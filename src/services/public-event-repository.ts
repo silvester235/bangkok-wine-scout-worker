@@ -123,6 +123,11 @@ function mapEvent(row: PublicEventRow): PublicEventSummary {
 	};
 }
 
+const PUBLIC_ASSET_CONDITION = `ea.is_public = 1
+	AND ea.source_type != 'line_text'
+	AND ea.r2_object_key IS NOT NULL
+	AND LOWER(ea.content_type) LIKE 'image/%'`;
+
 const PUBLIC_EVENT_COLUMNS = `
 	e.id,
 	e.slug,
@@ -138,25 +143,25 @@ const PUBLIC_EVENT_COLUMNS = `
 	e.is_wine_event,
 	e.published_at,
 	(SELECT ea.asset_id FROM event_assets ea
-		WHERE ea.event_id = e.id AND ea.is_public = 1 AND ea.source_type != 'line_text'
+		WHERE ea.event_id = e.id AND ${PUBLIC_ASSET_CONDITION}
 		ORDER BY CASE ea.asset_role
 			WHEN 'main' THEN 0 WHEN 'flyer' THEN 1 WHEN 'menu' THEN 2
 			WHEN 'reminder' THEN 3 WHEN 'social' THEN 4 WHEN 'map' THEN 5 ELSE 6 END,
 			ea.linked_at, ea.asset_id LIMIT 1) AS hero_asset_id,
 	(SELECT ea.asset_role FROM event_assets ea
-		WHERE ea.event_id = e.id AND ea.is_public = 1 AND ea.source_type != 'line_text'
+		WHERE ea.event_id = e.id AND ${PUBLIC_ASSET_CONDITION}
 		ORDER BY CASE ea.asset_role
 			WHEN 'main' THEN 0 WHEN 'flyer' THEN 1 WHEN 'menu' THEN 2
 			WHEN 'reminder' THEN 3 WHEN 'social' THEN 4 WHEN 'map' THEN 5 ELSE 6 END,
 			ea.linked_at, ea.asset_id LIMIT 1) AS hero_asset_role,
 	(SELECT ea.source_type FROM event_assets ea
-		WHERE ea.event_id = e.id AND ea.is_public = 1 AND ea.source_type != 'line_text'
+		WHERE ea.event_id = e.id AND ${PUBLIC_ASSET_CONDITION}
 		ORDER BY CASE ea.asset_role
 			WHEN 'main' THEN 0 WHEN 'flyer' THEN 1 WHEN 'menu' THEN 2
 			WHEN 'reminder' THEN 3 WHEN 'social' THEN 4 WHEN 'map' THEN 5 ELSE 6 END,
 			ea.linked_at, ea.asset_id LIMIT 1) AS hero_source_type,
 	(SELECT ea.content_type FROM event_assets ea
-		WHERE ea.event_id = e.id AND ea.is_public = 1 AND ea.source_type != 'line_text'
+		WHERE ea.event_id = e.id AND ${PUBLIC_ASSET_CONDITION}
 		ORDER BY CASE ea.asset_role
 			WHEN 'main' THEN 0 WHEN 'flyer' THEN 1 WHEN 'menu' THEN 2
 			WHEN 'reminder' THEN 3 WHEN 'social' THEN 4 WHEN 'map' THEN 5 ELSE 6 END,
@@ -251,8 +256,7 @@ export async function listPublicEventAssets(
 		JOIN events e ON e.id = ea.event_id
 		WHERE ea.event_id = ?
 			AND ${PUBLIC_EVENT_CONDITION}
-			AND ea.is_public = 1
-			AND ea.source_type != 'line_text'
+			AND ${PUBLIC_ASSET_CONDITION}
 		ORDER BY CASE ea.asset_role
 			WHEN 'main' THEN 0 WHEN 'flyer' THEN 1 WHEN 'menu' THEN 2
 			WHEN 'reminder' THEN 3 WHEN 'social' THEN 4 WHEN 'map' THEN 5 ELSE 6 END,
@@ -269,23 +273,20 @@ export async function getPublicAsset(db: D1Database, assetId: string): Promise<P
 			ea.source_type,
 			ea.content_type,
 			ea.r2_object_key,
-			ea.intake_id,
 			e.title
 		FROM event_assets ea
 		JOIN events e ON e.id = ea.event_id
 		WHERE ea.asset_id = ?
 			AND ${PUBLIC_EVENT_CONDITION}
-			AND ea.is_public = 1
-			AND ea.source_type != 'line_text'
+			AND ${PUBLIC_ASSET_CONDITION}
 		LIMIT 1`,
 	).bind(assetId).first<PublicAssetRow & {
-		r2_object_key: string | null;
-		intake_id: string;
+		r2_object_key: string;
 		title: string | null;
 	}>();
 	if (!row) return null;
 	return {
 		...mapAsset(row, row.title),
-		r2ObjectKey: row.r2_object_key ?? `intakes/${row.intake_id}/assets/${row.asset_id}/original`,
+		r2ObjectKey: row.r2_object_key,
 	};
 }

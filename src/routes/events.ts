@@ -1,4 +1,5 @@
 import type { WorkerEnv } from '../types/env';
+import { ifNoneMatchMatches } from '../services/http-etag';
 import {
 	getPublicAsset,
 	getPublishedEventBySlug,
@@ -156,7 +157,7 @@ async function handleAsset(request: Request, env: WorkerEnv, assetId: string): P
 		headers.set('content-type', metadata.httpMetadata?.contentType ?? asset.contentType ?? 'application/octet-stream');
 		headers.set('etag', metadata.httpEtag);
 		headers.set('cache-control', ASSET_CACHE);
-		if (conditionalEtag === metadata.httpEtag) return new Response(null, { status: 304, headers });
+		if (ifNoneMatchMatches(conditionalEtag, metadata.httpEtag)) return new Response(null, { status: 304, headers });
 		if (request.method === 'HEAD') return new Response(null, { status: 200, headers });
 	}
 	const object = await env.EVENT_INTAKES.get(asset.r2ObjectKey);

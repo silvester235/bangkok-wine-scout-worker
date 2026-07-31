@@ -44,6 +44,7 @@ Implemented:
 - Read-only public API for explicitly published events and visual assets
 - Cursor pagination, Bangkok-local upcoming filtering, field filters, CORS, and public caching
 - Stable public event slugs and authorized R2 asset streaming
+- Private-by-default assets and automatic draft reset after material changes to published events
 - D1-backed correlation of nearby LINE text with subsequent flyer images
 - Labeled extraction contexts that preserve LINE text and flyer OCR separately
 - Idempotent `line_text` and `line_image` source assets linked to one canonical event

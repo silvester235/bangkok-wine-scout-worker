@@ -46,7 +46,7 @@ const schema = `
 		source_type TEXT NOT NULL DEFAULT 'line_image',
 		source_message_id TEXT,
 		text_content TEXT,
-		is_public INTEGER NOT NULL DEFAULT 1,
+		is_public INTEGER NOT NULL DEFAULT 0,
 		r2_object_key TEXT,
 		content_type TEXT,
 		linked_at TEXT NOT NULL,
@@ -282,6 +282,80 @@ describe('D1 event resolution', () => {
 		expect((await env.DB.prepare('SELECT COUNT(*) AS count FROM events').first<{ count: number }>())?.count).toBe(1);
 	});
 
+	it('unpublishes a published event when a merge changes a material public field', async () => {
+		const first = await saveWineEvent(env.DB, input('flyer-1', { event: { priceTHB: null } }));
+		await env.DB.prepare(
+			`UPDATE events SET status = 'published', published_at = ? WHERE id = ?`,
+		).bind('2026-07-01T00:00:00.000Z', first.id).run();
+
+		await saveWineEvent(env.DB, input('flyer-2', { event: { priceTHB: 3200 } }));
+		const row = await env.DB.prepare(
+			'SELECT status, published_at, price_thb FROM events WHERE id = ?',
+		).bind(first.id).first<{ status: string; published_at: string | null; price_thb: number }>();
+
+		expect(row).toEqual({ status: 'draft', published_at: null, price_thb: 3200 });
+	});
+
+	it('keeps a published event published when a merge only links another asset', async () => {
+		const first = await saveWineEvent(env.DB, input('flyer-1'));
+		const publishedAt = '2026-07-01T00:00:00.000Z';
+		await env.DB.prepare(
+			`UPDATE events SET status = 'published', published_at = ? WHERE id = ?`,
+		).bind(publishedAt, first.id).run();
+
+		await saveWineEvent(env.DB, input('flyer-2'));
+		const row = await env.DB.prepare(
+			'SELECT status, published_at FROM events WHERE id = ?',
+		).bind(first.id).first<{ status: string; published_at: string | null }>();
+
+		expect(row).toEqual({ status: 'published', published_at: publishedAt });
+	});
+
+	it('stores new assets privately unless publication is explicit', async () => {
+		await saveWineEvent(env.DB, input('private'));
+		await saveWineEvent(env.DB, input('public', { isPublic: true }));
+		const assets = await env.DB.prepare(
+			'SELECT asset_id, is_public FROM event_assets ORDER BY asset_id',
+		).all<{ asset_id: string; is_public: number }>();
+
+		expect(assets.results).toEqual([
+			{ asset_id: 'private', is_public: 0 },
+			{ asset_id: 'public', is_public: 1 },
+		]);
+	});
+
+	it('refreshes safe asset metadata without clearing existing nullable delivery metadata', async () => {
+		await saveWineEvent(env.DB, input('flyer-1', {
+			assetRole: 'flyer', sourceType: 'line_image', isPublic: false,
+		}));
+		await saveWineEvent(env.DB, input('flyer-1', {
+			assetRole: 'menu', sourceType: 'other', isPublic: true,
+			r2ObjectKey: 'intakes/event/asset/original', contentType: 'image/png',
+		}));
+		await saveWineEvent(env.DB, input('flyer-1', {
+			assetRole: 'reminder', sourceType: 'line_image', isPublic: false,
+			r2ObjectKey: undefined, contentType: undefined,
+		}));
+		const row = await env.DB.prepare(
+			`SELECT asset_role, source_type, is_public, r2_object_key, content_type
+			FROM event_assets WHERE asset_id = ?`,
+		).bind('flyer-1').first<{
+			asset_role: string;
+			source_type: string;
+			is_public: number;
+			r2_object_key: string | null;
+			content_type: string | null;
+		}>();
+
+		expect(row).toEqual({
+			asset_role: 'reminder',
+			source_type: 'line_image',
+			is_public: 0,
+			r2_object_key: 'intakes/event/asset/original',
+			content_type: 'image/png',
+		});
+	});
+
 	it('links fused LINE text and image sources to one event idempotently', async () => {
 		const fused = input('flyer-1', {
 			sourceType: 'line_image',
@@ -293,12 +367,13 @@ describe('D1 event resolution', () => {
 				sourceType: 'line_text',
 				sourceMessageId: 'text-message-1',
 				textContent: 'Wine list: Château Margaux 2018',
+				isPublic: true,
 			}],
 		});
 		const first = await saveWineEvent(env.DB, fused);
 		const second = await saveWineEvent(env.DB, fused);
 		const assets = await env.DB.prepare(
-			`SELECT event_id, source_type, source_message_id, text_content
+			`SELECT event_id, source_type, source_message_id, text_content, is_public
 			FROM event_assets
 			WHERE event_id = ?
 			ORDER BY source_type`,
@@ -307,6 +382,7 @@ describe('D1 event resolution', () => {
 			source_type: string;
 			source_message_id: string;
 			text_content: string | null;
+			is_public: number;
 		}>();
 
 		expect(second.id).toBe(first.id);
@@ -316,12 +392,14 @@ describe('D1 event resolution', () => {
 				source_type: 'line_image',
 				source_message_id: 'image-message-1',
 				text_content: null,
+				is_public: 0,
 			},
 			{
 				event_id: first.id,
 				source_type: 'line_text',
 				source_message_id: 'text-message-1',
 				text_content: 'Wine list: Château Margaux 2018',
+				is_public: 0,
 			},
 		]);
 	});

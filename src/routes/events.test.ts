@@ -18,7 +18,7 @@ const schema = `
 		event_id TEXT NOT NULL, intake_id TEXT NOT NULL, asset_id TEXT NOT NULL,
 		asset_role TEXT NOT NULL DEFAULT 'other', linked_at TEXT NOT NULL,
 		source_type TEXT NOT NULL DEFAULT 'line_image', source_message_id TEXT, text_content TEXT,
-		is_public INTEGER NOT NULL DEFAULT 1, r2_object_key TEXT, content_type TEXT,
+		is_public INTEGER NOT NULL DEFAULT 0, r2_object_key TEXT, content_type TEXT,
 		PRIMARY KEY (event_id, asset_id)
 	);
 `;
@@ -67,7 +67,8 @@ async function addAsset(eventId: string, assetId: string, input: {
 	role?: string;
 	type?: string;
 	isPublic?: boolean;
-	contentType?: string;
+	contentType?: string | null;
+	r2ObjectKey?: string | null;
 } = {}): Promise<string> {
 	const key = `intakes/intake-${eventId}/assets/${assetId}/original`;
 	await env.DB.prepare(
@@ -78,7 +79,8 @@ async function addAsset(eventId: string, assetId: string, input: {
 	).bind(
 		eventId, `intake-${eventId}`, assetId, input.role ?? 'flyer',
 		'2026-07-01T00:00:00.000Z', input.type ?? 'line_image', input.isPublic === false ? 0 : 1,
-		key, input.contentType ?? 'image/jpeg',
+		input.r2ObjectKey === undefined ? key : input.r2ObjectKey,
+		input.contentType === undefined ? 'image/jpeg' : input.contentType,
 	).run();
 	return key;
 }
@@ -176,6 +178,18 @@ describe('public event API', () => {
 		expect(body.data.map((asset: { id: string }) => asset.id)).toEqual(['flyer', 'menu']);
 	});
 
+	it('excludes assets without stored R2 keys or image content types', async () => {
+		await addEvent({ id: 'public' });
+		await addAsset('public', 'valid');
+		await addAsset('public', 'missing-key', { r2ObjectKey: null });
+		await addAsset('public', 'not-image', { contentType: 'application/pdf' });
+		const { body } = await json('/api/events/slug-public/assets');
+
+		expect(body.data.map((asset: { id: string }) => asset.id)).toEqual(['valid']);
+		expect((await SELF.fetch('https://api.example.com/api/assets/missing-key')).status).toBe(404);
+		expect((await SELF.fetch('https://api.example.com/api/assets/not-image')).status).toBe(404);
+	});
+
 	it('streams and supports HEAD and conditional requests for a published asset', async () => {
 		await addEvent({ id: 'public' });
 		const key = await addAsset('public', 'flyer');
@@ -188,10 +202,18 @@ describe('public event API', () => {
 		const head = await SELF.fetch('https://api.example.com/api/assets/flyer', { method: 'HEAD' });
 		expect(head.status).toBe(200);
 		expect(await head.text()).toBe('');
-		const conditional = await SELF.fetch('https://api.example.com/api/assets/flyer', {
-			headers: { 'if-none-match': response.headers.get('etag')! },
+		const etag = response.headers.get('etag')!;
+		for (const validator of [etag, `"other", ${etag}`, `W/${etag}`, '*']) {
+			const conditional = await SELF.fetch('https://api.example.com/api/assets/flyer', {
+				headers: { 'if-none-match': validator },
+			});
+			expect(conditional.status).toBe(304);
+		}
+		const nonMatching = await SELF.fetch('https://api.example.com/api/assets/flyer', {
+			headers: { 'if-none-match': '"other"' },
 		});
-		expect(conditional.status).toBe(304);
+		expect(nonMatching.status).toBe(200);
+		await nonMatching.arrayBuffer();
 	});
 
 	it('hides unknown, private, text, and unpublished assets and never accepts R2 keys', async () => {

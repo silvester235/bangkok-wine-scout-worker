@@ -82,6 +82,28 @@ Stores each original flyer, image, page, or other source artifact belonging to a
 
 The LINE message ID is unique at asset level. Re-delivery of the same LINE message must not create a second asset.
 
+## `event_assets`
+
+Links canonical events to the persisted source assets used by the current ingestion pipeline.
+
+| Column | Type | Description |
+|---|---|---|
+| `event_id` | TEXT NOT NULL | Canonical event owner |
+| `intake_id` | TEXT NOT NULL | Original intake identity |
+| `asset_id` | TEXT NOT NULL | Stable asset identity |
+| `asset_role` | TEXT NOT NULL | `main`, `flyer`, `menu`, `reminder`, `social`, `map`, or `other` |
+| `source_type` | TEXT NOT NULL | `line_image`, `line_text`, or another supported source type |
+| `source_message_id` | TEXT | Provider message identity used for idempotency |
+| `text_content` | TEXT | Private source text where applicable |
+| `is_public` | INTEGER NOT NULL DEFAULT 0 | Explicit public approval flag; new assets are private |
+| `r2_object_key` | TEXT | Persisted internal R2 key for binary assets |
+| `content_type` | TEXT | Persisted media type |
+| `linked_at` | TEXT NOT NULL | ISO link timestamp |
+
+Asset upserts may refresh role, source type, publication flag, R2 key, and content type. They do not move ownership or replace original source identifiers/text. Nullable R2 metadata is only enriched and is not cleared by a retry that omits it.
+
+The public API requires `is_public = 1`, a non-text source, a persisted R2 key, and an `image/*` content type. Event publication never makes all linked assets public automatically.
+
 ## `events`
 
 Stores the canonical reviewed event record.
@@ -192,6 +214,8 @@ Potential duplicates should be shown during review instead of being deleted auto
 - Never combine multiple flyers into one destructive flattened image.
 - Keep raw AI output and asset-level evidence for troubleshooting and reprocessing.
 - Do not publish an event automatically during the MVP.
+- Reset a published event to `draft` and clear `published_at` when ingestion materially changes a public canonical field.
+- Keep newly linked assets private until an explicit review decision marks them public.
 
 ## Initial migration order
 
