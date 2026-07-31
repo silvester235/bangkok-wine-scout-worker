@@ -1,0 +1,30 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "bangkok-wine-scout-worker-test",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-03-10",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"queues": {
+		"producers": [
+			{
+				"queue": "bangkok-wine-scout-processing-test",
+				"binding": "IMAGE_PROCESSING_QUEUE"
+			}
+		]
+	},
+	"r2_buckets": [
+		{
+			"binding": "EVENT_INTAKES",
+			"bucket_name": "bangkok-wine-scout-intakes-test"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "bangkok-wine-scout-test",
+			"database_id": "00000000-0000-0000-0000-000000000000"
+		}
+	]
+}
