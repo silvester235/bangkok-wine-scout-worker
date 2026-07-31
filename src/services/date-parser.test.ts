@@ -42,11 +42,13 @@ describe('parseEventDate', () => {
 		expect(parseEventDate('Friday 31st July')).toBe('2026-07-31');
 	});
 
-	it('finds the earliest future year matching the stated weekday', () => {
+	it('rejects a stale yearless date when no matching weekday occurs within the event horizon', () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date('2026-08-01T00:00:00Z'));
 
-		expect(parseEventDate('Friday 31st July')).toBe('2032-07-31');
+		// 31 July 2032 is a Saturday, not a Friday. The next matching Friday
+		// would be 2037, which is outside the parser's eight-year event horizon.
+		expect(parseEventDate('Friday 31st July')).toBeNull();
 	});
 
 	it('extracts a yearless date from surrounding OCR text', () => {
