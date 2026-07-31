@@ -1,4 +1,5 @@
 import { parseEventDateFromText } from './date-parser';
+import type { EventExtractionContext } from './event-extraction-context';
 
 const EVENT_MODEL = '@cf/meta/llama-3.1-8b-instruct-fast';
 
@@ -16,6 +17,7 @@ export interface ExtractedWineEvent {
 	bookingUrl: string | null;
 	contact: string | null;
 	wines: string[];
+	wineRegions: string[];
 	menu: string[];
 	notes: string[];
 	confidence: number;
@@ -42,7 +44,7 @@ const EVENT_SCHEMA = {
 		address: { type: ['string', 'null'] },
 		date: {
 			type: ['string', 'null'],
-			description: 'ISO date YYYY-MM-DD only when the complete date including a four-digit year is explicitly visible in the OCR text; otherwise null.',
+			description: 'ISO date YYYY-MM-DD only when supported by the supplied LINE message or flyer OCR evidence; otherwise null.',
 		},
 		startTime: { type: ['string', 'null'] },
 		endTime: { type: ['string', 'null'] },
@@ -52,6 +54,7 @@ const EVENT_SCHEMA = {
 		bookingUrl: { type: ['string', 'null'] },
 		contact: { type: ['string', 'null'] },
 		wines: { type: 'array', items: { type: 'string' } },
+		wineRegions: { type: 'array', items: { type: 'string' } },
 		menu: { type: 'array', items: { type: 'string' } },
 		notes: { type: 'array', items: { type: 'string' } },
 		confidence: { type: 'number', minimum: 0, maximum: 1 },
@@ -70,6 +73,7 @@ const EVENT_SCHEMA = {
 		'bookingUrl',
 		'contact',
 		'wines',
+		'wineRegions',
 		'menu',
 		'notes',
 		'confidence',
@@ -107,31 +111,31 @@ function isExtractedWineEvent(value: unknown): value is ExtractedWineEvent {
 		typeof event.isWineEvent === 'boolean' &&
 		(event.title === null || typeof event.title === 'string') &&
 		Array.isArray(event.wines) &&
+		Array.isArray(event.wineRegions) &&
 		Array.isArray(event.menu) &&
 		Array.isArray(event.notes) &&
 		typeof event.confidence === 'number'
 	);
 }
 
-function hasExplicitFourDigitYear(text: string): boolean {
-	return /\b(?:19|20)\d{2}\b/.test(text);
-}
-
 /**
  * The model is not allowed to invent a year. Enforce that rule after inference:
- * when OCR has no explicit year, resolve the visible day/month/weekday to the
+ * when extraction has no date, resolve the visible day/month/weekday to the
  * earliest date that is today or in the future.
  */
 export function resolveExtractedEventDate(
 	event: ExtractedWineEvent,
-	ocrText: string,
+	context: EventExtractionContext,
 	referenceDate = new Date(),
 ): ExtractedWineEvent {
-	if (hasExplicitFourDigitYear(ocrText)) return event;
+	if (event.date) return event;
+	const sourceDate = context.sourceText ? parseEventDateFromText(context.sourceText, referenceDate) : null;
+	const ocrDate = context.ocrText ? parseEventDateFromText(context.ocrText, referenceDate) : null;
+	const date = sourceDate && ocrDate && sourceDate !== ocrDate ? null : sourceDate ?? ocrDate;
 
 	return {
 		...event,
-		date: parseEventDateFromText(ocrText, referenceDate),
+		date,
 	};
 }
 
@@ -141,23 +145,36 @@ export async function extractAndStoreEvent(
 	input: {
 		intakeId: string;
 		assetId: string;
-		ocrText: string;
+		context: EventExtractionContext;
 	},
 ): Promise<EventExtractionResult> {
 	const eventKey = `intakes/${input.intakeId}/assets/${input.assetId}/event.json`;
+	const contextKey = `intakes/${input.intakeId}/assets/${input.assetId}/extraction-context.json`;
 	const processedAt = new Date().toISOString();
 
+	await bucket.put(contextKey, JSON.stringify(input.context, null, 2), {
+		httpMetadata: { contentType: 'application/json' },
+		customMetadata: {
+			intakeId: input.intakeId,
+			assetId: input.assetId,
+			hasSourceText: String(Boolean(input.context.sourceText)),
+			hasOcrText: String(Boolean(input.context.ocrText)),
+		},
+	});
+
 	try {
+		if (!input.context.combinedText) throw new Error('Event extraction context is empty.');
+
 		const response = (await ai.run(EVENT_MODEL, {
 			messages: [
 				{
 					role: 'system',
 					content:
-						'Extract structured data from the supplied OCR transcription. Treat the OCR text as the primary and only factual source. Preserve factual information exactly and never add details that are not supported by the OCR. You may correct an obvious OCR spelling error in a proper noun, including a wine name, château name, winery, grape variety, restaurant name, or venue, only when the intended spelling is highly certain from the visible OCR context. Do not use outside knowledge to invent, autocomplete, or reconstruct missing information. Never translate or paraphrase. Return an ISO date in YYYY-MM-DD format only when the complete date, including a four-digit year, is explicitly visible in the OCR text. Never infer or guess a year; otherwise return null. Preserve phone numbers, email addresses, and URLs as recognized in the OCR. If one or two characters appear uncertain but the value is still present, retain the OCR output rather than discarding the entire value. Never invent missing characters, change a domain, or replace .th with .uk or another suffix. Put reservation details, email addresses, phone numbers, and URLs in contact, bookingUrl, address, or notes as appropriate so they remain available for downstream extraction. Preserve original capitalization, punctuation, accents, spacing, and wording unless applying a highly certain proper-noun OCR correction. Use null or an empty array for genuinely missing information. Set confidence lower whenever OCR text is unclear. Bangkok dates and times normally use Asia/Bangkok, but set timezone to null unless the text or location makes it reasonably clear.',
+						'Extract structured event data from the separately labeled LINE MESSAGE and FLYER OCR sources. Use both sources as factual evidence; information may appear in only one source. Never invent, autocomplete, translate, or paraphrase unsupported facts. If sources conflict, preserve uncertainty by lowering confidence and retaining the conflict in notes rather than silently choosing an unsupported value. You may correct an obvious OCR spelling error in a proper noun only when the intended spelling is highly certain from the supplied evidence. Return an ISO date in YYYY-MM-DD format only when supported by the evidence; never guess a year. Preserve wine names, vintages, regions, prices, venues, phone numbers, email addresses, and URLs exactly when possible. Use null or an empty array for genuinely missing information. Bangkok dates and times normally use Asia/Bangkok, but set timezone to null unless the text or location makes it reasonably clear.',
 				},
 				{
 					role: 'user',
-					content: input.ocrText,
+					content: input.context.combinedText,
 				},
 			],
 			temperature: 0,
@@ -174,7 +191,7 @@ export async function extractAndStoreEvent(
 			throw new Error('Workers AI returned an invalid event structure.');
 		}
 
-		const event = resolveExtractedEventDate(rawEvent, input.ocrText);
+		const event = resolveExtractedEventDate(rawEvent, input.context);
 		const result: EventExtractionResult = {
 			schemaVersion: 1,
 			status: 'completed',

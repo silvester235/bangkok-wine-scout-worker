@@ -8,11 +8,24 @@ import {
 import { mergeEventData, type CanonicalEventData } from './event-merger';
 
 export type EventAssetRole = 'main' | 'flyer' | 'menu' | 'reminder' | 'social' | 'map' | 'other';
+export type EventSourceType = 'line_image' | 'line_text' | 'other';
+
+export interface EventSourceAssetInput {
+	intakeId: string;
+	assetId: string;
+	assetRole?: EventAssetRole;
+	sourceType: EventSourceType;
+	sourceMessageId?: string;
+	textContent?: string;
+}
 
 export interface StoredWineEventInput {
 	intakeId: string;
 	assetId: string;
 	assetRole?: EventAssetRole;
+	sourceType?: EventSourceType;
+	sourceMessageId?: string;
+	relatedAssets?: EventSourceAssetInput[];
 	title: string | null;
 	event: NormalizedWineEvent;
 }
@@ -137,7 +150,7 @@ export async function findCandidateEvents(
 async function linkEventAsset(
 	db: D1Database,
 	eventId: string,
-	input: StoredWineEventInput,
+	asset: EventSourceAssetInput,
 	linkedAt: string,
 ): Promise<void> {
 	await db
@@ -147,19 +160,42 @@ async function linkEventAsset(
 				intake_id,
 				asset_id,
 				asset_role,
+				source_type,
+				source_message_id,
+				text_content,
 				linked_at
-			) VALUES (?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(asset_id) DO UPDATE SET
 				asset_role = excluded.asset_role`,
 		)
 		.bind(
 			eventId,
-			input.intakeId,
-			input.assetId,
-			input.assetRole ?? 'other',
+			asset.intakeId,
+			asset.assetId,
+			asset.assetRole ?? 'other',
+			asset.sourceType,
+			asset.sourceMessageId ?? null,
+			asset.textContent ?? null,
 			linkedAt,
 		)
 		.run();
+}
+
+async function linkEventAssets(
+	db: D1Database,
+	eventId: string,
+	input: StoredWineEventInput,
+	linkedAt: string,
+): Promise<void> {
+	await linkEventAsset(db, eventId, {
+		intakeId: input.intakeId,
+		assetId: input.assetId,
+		assetRole: input.assetRole,
+		sourceType: input.sourceType ?? 'line_image',
+		sourceMessageId: input.sourceMessageId,
+	}, linkedAt);
+
+	for (const asset of input.relatedAssets ?? []) await linkEventAsset(db, eventId, asset, linkedAt);
 }
 
 export async function saveWineEvent(
@@ -273,7 +309,7 @@ export async function saveWineEvent(
 			assetId: input.assetId,
 		}));
 
-		await linkEventAsset(db, id, input, createdAt);
+		await linkEventAssets(db, id, input, createdAt);
 		return { id, duplicate: true };
 	}
 
@@ -325,6 +361,6 @@ export async function saveWineEvent(
 		)
 		.run();
 
-	await linkEventAsset(db, id, input, createdAt);
+	await linkEventAssets(db, id, input, createdAt);
 	return { id, duplicate: false };
 }

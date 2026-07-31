@@ -2,7 +2,8 @@ import type { WorkerEnv } from './types/env';
 import type { AiEventResolutionOptions } from './services/event-repository';
 
 export const APP_NAME = 'Bangkok Wine Scout';
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
+const DEFAULT_LINE_TEXT_CONTEXT_WINDOW_SECONDS = 600;
 
 function parseNumber(value: string, name: string): number {
 	const parsed = Number(value);
@@ -46,5 +47,27 @@ export function getOptionalAiEventResolutionOptions(env: WorkerEnv): AiEventReso
 			error: error instanceof Error ? error.message : String(error),
 		}));
 		return undefined;
+	}
+}
+
+export function getLineTextContextWindowSeconds(env: WorkerEnv): number {
+	const value = env.LINE_TEXT_CONTEXT_WINDOW_SECONDS?.trim();
+	if (!value) return DEFAULT_LINE_TEXT_CONTEXT_WINDOW_SECONDS;
+
+	const seconds = Number(value);
+	if (!Number.isInteger(seconds) || seconds <= 0) {
+		throw new Error('LINE_TEXT_CONTEXT_WINDOW_SECONDS must be a positive integer.');
+	}
+	return seconds;
+}
+
+export function getOptionalLineTextContextWindowSeconds(env: WorkerEnv): number | null {
+	try {
+		return getLineTextContextWindowSeconds(env);
+	} catch (error) {
+		console.error('LINE TEXT CONTEXT CONFIG INVALID', JSON.stringify({
+			error: error instanceof Error ? error.message : String(error),
+		}));
+		return null;
 	}
 }

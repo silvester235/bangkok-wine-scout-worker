@@ -4,9 +4,13 @@
 
 The current public integration is the LINE webhook. A separate REST API is planned for the dashboard and event publication workflow.
 
-Current application version: `v0.5.0`
+Current application version: `v0.6.0`
 
 ## LINE webhook
+
+Non-command LINE text is preserved as pending event context. When a flyer image from the same conservative conversation identity follows within `LINE_TEXT_CONTEXT_WINDOW_SECONDS` (600 seconds by default), the newest unconsumed text is fused with flyer OCR for one extraction run. Commands continue through the command router and are not stored as event context.
+
+LINE may retry webhook delivery. Text message IDs, image assets, correlation claims, and event source links are idempotent.
 
 ### `POST /webhook`
 
@@ -16,9 +20,10 @@ Responsibilities:
 
 1. Verify the LINE signature
 2. Parse webhook events
-3. Route text commands
-4. Reply through the LINE Messaging API
-5. In Phase 2, route image messages to the event-intake pipeline
+3. Route known text commands
+4. Persist non-command text as eligible event context
+5. Reply through the LINE Messaging API
+6. Route image messages to the queued event-intake pipeline
 
 ### Supported text commands
 
@@ -46,16 +51,17 @@ Displays a short project description.
 
 Unknown commands should receive a helpful response rather than failing silently.
 
-## Planned LINE image flow
+## LINE text and image flow
 
 When a user sends an image:
 
-1. Read the LINE message ID
-2. Download the image through the LINE content API
-3. Store the original bytes in R2
-4. Create an `event_intakes` record
-5. Reply that the flyer was received
-6. Queue or start AI extraction
+1. Persist eligible LINE text in D1 by message and conversation identity.
+2. Read the subsequent image message ID and queue processing.
+3. Download and preserve the image in R2.
+4. Atomically claim recent unconsumed text from the same conversation identity.
+5. OCR the flyer and build a labeled extraction context containing both sources.
+6. Extract, normalize, resolve, and merge one canonical event.
+7. Link the text and image as separate source assets without duplication.
 
 A successful receipt reply confirms storage, not publication.
 

@@ -39,11 +39,15 @@ const schema = `
 		intake_id TEXT NOT NULL,
 		asset_id TEXT NOT NULL,
 		asset_role TEXT NOT NULL DEFAULT 'other',
+		source_type TEXT NOT NULL DEFAULT 'line_image',
+		source_message_id TEXT,
+		text_content TEXT,
 		linked_at TEXT NOT NULL,
 		PRIMARY KEY (event_id, asset_id),
 		FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
 	);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_event_assets_asset_id ON event_assets(asset_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_event_assets_source_message_id ON event_assets(source_message_id) WHERE source_message_id IS NOT NULL;
 `;
 
 const baseEvent: NormalizedWineEvent = {
@@ -269,6 +273,50 @@ describe('D1 event resolution', () => {
 
 		expect(link).toEqual({ count: 1, role: 'flyer' });
 		expect((await env.DB.prepare('SELECT COUNT(*) AS count FROM events').first<{ count: number }>())?.count).toBe(1);
+	});
+
+	it('links fused LINE text and image sources to one event idempotently', async () => {
+		const fused = input('flyer-1', {
+			sourceType: 'line_image',
+			sourceMessageId: 'image-message-1',
+			relatedAssets: [{
+				intakeId: 'intake-flyer-1',
+				assetId: 'line-text-text-message-1',
+				assetRole: 'other',
+				sourceType: 'line_text',
+				sourceMessageId: 'text-message-1',
+				textContent: 'Wine list: Château Margaux 2018',
+			}],
+		});
+		const first = await saveWineEvent(env.DB, fused);
+		const second = await saveWineEvent(env.DB, fused);
+		const assets = await env.DB.prepare(
+			`SELECT event_id, source_type, source_message_id, text_content
+			FROM event_assets
+			WHERE event_id = ?
+			ORDER BY source_type`,
+		).bind(first.id).all<{
+			event_id: string;
+			source_type: string;
+			source_message_id: string;
+			text_content: string | null;
+		}>();
+
+		expect(second.id).toBe(first.id);
+		expect(assets.results).toEqual([
+			{
+				event_id: first.id,
+				source_type: 'line_image',
+				source_message_id: 'image-message-1',
+				text_content: null,
+			},
+			{
+				event_id: first.id,
+				source_type: 'line_text',
+				source_message_id: 'text-message-1',
+				text_content: 'Wine list: Château Margaux 2018',
+			},
+		]);
 	});
 });
 
