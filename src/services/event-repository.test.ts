@@ -282,7 +282,7 @@ describe('D1 event resolution', () => {
 		expect((await env.DB.prepare('SELECT COUNT(*) AS count FROM events').first<{ count: number }>())?.count).toBe(1);
 	});
 
-	it('unpublishes a published event when a merge changes a material public field', async () => {
+	it('keeps a published event published when enrichment changes a public field', async () => {
 		const first = await saveWineEvent(env.DB, input('flyer-1', { event: { priceTHB: null } }));
 		await env.DB.prepare(
 			`UPDATE events SET status = 'published', published_at = ? WHERE id = ?`,
@@ -293,7 +293,54 @@ describe('D1 event resolution', () => {
 			'SELECT status, published_at, price_thb FROM events WHERE id = ?',
 		).bind(first.id).first<{ status: string; published_at: string | null; price_thb: number }>();
 
-		expect(row).toEqual({ status: 'draft', published_at: null, price_thb: 3200 });
+		expect(row).toEqual({ status: 'published', published_at: '2026-07-01T00:00:00.000Z', price_thb: 3200 });
+	});
+
+	it.each([
+		['flyer with no date', { date: null }],
+		['flyer with no booking URL', {}],
+		['flyer with only title', {
+			date: null, startTime: null, priceTHB: null, venue: null,
+			contactEmail: null, contactPhone: null, wines: [], wineRegions: [],
+		}],
+		['flyer with only image', {
+			date: null, startTime: null, priceTHB: null, venue: null,
+			contactEmail: null, contactPhone: null, wines: [], wineRegions: [], isWineEvent: false,
+		}],
+		['flyer with email but no website', {
+			date: null, startTime: null, priceTHB: null, venue: null,
+			contactEmail: 'hello@example.com', contactPhone: null, wines: [], wineRegions: [],
+		}],
+		['flyer with phone number only', {
+			date: null, startTime: null, priceTHB: null, venue: null,
+			contactEmail: null, contactPhone: '+66 81 234 5678', wines: [], wineRegions: [],
+		}],
+	] satisfies Array<[string, Partial<NormalizedWineEvent>]>)('publishes a %s', async (_name, event) => {
+		const onlyImage = _name === 'flyer with only image';
+		const result = await saveWineEvent(env.DB, input(`partial-${_name}`, {
+			title: onlyImage ? null : _name === 'flyer with phone number only' ? null : 'Detected title',
+			event: { wines: [], wineRegions: [], ...event },
+		}));
+		const row = await env.DB.prepare(
+			`SELECT title, event_date, status, published_at, wines_json, wine_regions_json
+			FROM events WHERE id = ?`,
+		).bind(result.id).first<{
+			title: string | null;
+			event_date: string | null;
+			status: string;
+			published_at: string | null;
+			wines_json: string;
+			wine_regions_json: string;
+		}>();
+
+		expect(row?.status).toBe('published');
+		expect(row?.published_at).not.toBeNull();
+		expect(row?.wines_json).toBe('[]');
+		expect(row?.wine_regions_json).toBe('[]');
+		if (onlyImage) {
+			expect(row?.title).toBeNull();
+			expect(row?.event_date).toBeNull();
+		}
 	});
 
 	it('keeps a published event published when a merge only links another asset', async () => {

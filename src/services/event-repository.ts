@@ -5,7 +5,7 @@ import {
 	type AiEventResolverConfig,
 	type AiResolutionCandidate,
 } from './ai-event-resolver';
-import { mergeEventData, type CanonicalEventData, type CanonicalEventField } from './event-merger';
+import { mergeEventData, type CanonicalEventData } from './event-merger';
 import { createUniqueEventSlug } from './event-slug';
 
 export type EventAssetRole = 'main' | 'flyer' | 'menu' | 'reminder' | 'social' | 'map' | 'other';
@@ -73,19 +73,6 @@ interface StoredCanonicalEvent extends CanonicalEventData {
 	status: string;
 	publishedAt: string | null;
 }
-
-const MATERIAL_PUBLIC_FIELDS = new Set<CanonicalEventField>([
-	'title',
-	'date',
-	'startTime',
-	'priceTHB',
-	'venue',
-	'contactEmail',
-	'contactPhone',
-	'wines',
-	'wineRegions',
-	'isWineEvent',
-]);
 
 function parseStringArray(value: string): string[] {
 	try {
@@ -318,9 +305,6 @@ export async function saveWineEvent(
 		if (!existing) throw new Error(`Resolved event not found: ${resolvedEventId}`);
 
 		const merge = mergeEventData(existing, { title: input.title, ...input.event });
-		const unpublishedDueToMerge = existing.status === 'published'
-			&& existing.publishedAt !== null
-			&& merge.changedFields.some((field) => MATERIAL_PUBLIC_FIELDS.has(field));
 		await db
 			.prepare(
 				`UPDATE events SET
@@ -334,8 +318,8 @@ export async function saveWineEvent(
 					wines_json = ?,
 					wine_regions_json = ?,
 					is_wine_event = ?,
-					status = CASE WHEN ? = 1 THEN 'draft' ELSE status END,
-					published_at = CASE WHEN ? = 1 THEN NULL ELSE published_at END
+					status = 'published',
+					published_at = COALESCE(published_at, ?)
 				WHERE id = ?`,
 			)
 			.bind(
@@ -349,8 +333,7 @@ export async function saveWineEvent(
 				JSON.stringify(merge.event.wines),
 				JSON.stringify(merge.event.wineRegions),
 				merge.event.isWineEvent ? 1 : 0,
-				unpublishedDueToMerge ? 1 : 0,
-				unpublishedDueToMerge ? 1 : 0,
+				createdAt,
 				id,
 			)
 			.run();
@@ -359,7 +342,7 @@ export async function saveWineEvent(
 			eventId: id,
 			changedFields: merge.changedFields,
 			conflictFields: merge.conflicts.map((conflict) => conflict.field),
-			unpublishedDueToMerge,
+			published: true,
 			assetId: input.assetId,
 		}));
 
@@ -390,8 +373,10 @@ export async function saveWineEvent(
 				wine_regions_json,
 				is_wine_event,
 				slug,
+				status,
+				published_at,
 				created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
 			ON CONFLICT(asset_id) DO UPDATE SET
 				title = excluded.title,
 				event_date = excluded.event_date,
@@ -402,7 +387,9 @@ export async function saveWineEvent(
 				contact_phone = excluded.contact_phone,
 				wines_json = excluded.wines_json,
 				wine_regions_json = excluded.wine_regions_json,
-				is_wine_event = excluded.is_wine_event`,
+				is_wine_event = excluded.is_wine_event,
+				status = 'published',
+				published_at = COALESCE(events.published_at, excluded.published_at)`,
 		)
 		.bind(
 			id,
@@ -419,6 +406,7 @@ export async function saveWineEvent(
 			JSON.stringify(input.event.wineRegions),
 			input.event.isWineEvent ? 1 : 0,
 			slug,
+			createdAt,
 			createdAt,
 		)
 		.run();
