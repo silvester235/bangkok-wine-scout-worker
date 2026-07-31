@@ -5,6 +5,7 @@ import {
 	type AiEventResolverConfig,
 	type AiResolutionCandidate,
 } from './ai-event-resolver';
+import { mergeEventData, type CanonicalEventData } from './event-merger';
 
 export type EventAssetRole = 'main' | 'flyer' | 'menu' | 'reminder' | 'social' | 'map' | 'other';
 
@@ -31,6 +32,63 @@ export interface AiEventResolutionOptions {
 interface EventResolutionCandidate extends ExistingEventCandidate {
 	priceTHB: number | null;
 	description: string | null;
+}
+
+interface ExistingEventRow {
+	title: string | null;
+	event_date: string | null;
+	start_time: string | null;
+	price_thb: number | null;
+	venue: string | null;
+	contact_email: string | null;
+	contact_phone: string | null;
+	wines_json: string;
+	wine_regions_json: string;
+	is_wine_event: number;
+}
+
+function parseStringArray(value: string): string[] {
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+	} catch {
+		return [];
+	}
+}
+
+async function findEventById(db: D1Database, eventId: string): Promise<CanonicalEventData | null> {
+	const row = await db
+		.prepare(
+			`SELECT
+				title,
+				event_date,
+				start_time,
+				price_thb,
+				venue,
+				contact_email,
+				contact_phone,
+				wines_json,
+				wine_regions_json,
+				is_wine_event
+			FROM events
+			WHERE id = ?`,
+		)
+		.bind(eventId)
+		.first<ExistingEventRow>();
+
+	if (!row) return null;
+	return {
+		title: row.title,
+		date: row.event_date,
+		startTime: row.start_time,
+		priceTHB: row.price_thb,
+		venue: row.venue,
+		contactEmail: row.contact_email,
+		contactPhone: row.contact_phone,
+		wines: parseStringArray(row.wines_json),
+		wineRegions: parseStringArray(row.wine_regions_json),
+		isWineEvent: row.is_wine_event === 1,
+	};
 }
 
 export async function findCandidateEvents(
@@ -174,33 +232,46 @@ export async function saveWineEvent(
 	const id = resolvedEventId ?? `${input.intakeId}:${input.assetId}`;
 
 	if (resolvedEventId) {
+		const existing = await findEventById(db, resolvedEventId);
+		if (!existing) throw new Error(`Resolved event not found: ${resolvedEventId}`);
+
+		const merge = mergeEventData(existing, { title: input.title, ...input.event });
 		await db
 			.prepare(
 				`UPDATE events SET
-					title = CASE WHEN NULLIF(TRIM(title), '') IS NULL THEN NULLIF(TRIM(?), '') ELSE title END,
-					event_date = COALESCE(event_date, ?),
-					start_time = COALESCE(start_time, ?),
-					price_thb = COALESCE(price_thb, ?),
-					venue = CASE WHEN NULLIF(TRIM(venue), '') IS NULL THEN NULLIF(TRIM(?), '') ELSE venue END,
-					contact_email = CASE WHEN NULLIF(TRIM(contact_email), '') IS NULL THEN NULLIF(TRIM(?), '') ELSE contact_email END,
-					contact_phone = CASE WHEN NULLIF(TRIM(contact_phone), '') IS NULL THEN NULLIF(TRIM(?), '') ELSE contact_phone END,
-					wines_json = CASE WHEN wines_json IS NULL OR wines_json = '[]' THEN ? ELSE wines_json END,
-					is_wine_event = CASE WHEN ? = 1 THEN 1 ELSE is_wine_event END
+					title = ?,
+					event_date = ?,
+					start_time = ?,
+					price_thb = ?,
+					venue = ?,
+					contact_email = ?,
+					contact_phone = ?,
+					wines_json = ?,
+					wine_regions_json = ?,
+					is_wine_event = ?
 				WHERE id = ?`,
 			)
 			.bind(
-				input.title,
-				input.event.date,
-				input.event.startTime,
-				input.event.priceTHB,
-				input.event.venue,
-				input.event.contactEmail,
-				input.event.contactPhone,
-				JSON.stringify(input.event.wines),
-				input.event.isWineEvent ? 1 : 0,
+				merge.event.title,
+				merge.event.date,
+				merge.event.startTime,
+				merge.event.priceTHB,
+				merge.event.venue,
+				merge.event.contactEmail,
+				merge.event.contactPhone,
+				JSON.stringify(merge.event.wines),
+				JSON.stringify(merge.event.wineRegions),
+				merge.event.isWineEvent ? 1 : 0,
 				id,
 			)
 			.run();
+
+		console.log('EVENT MERGE', JSON.stringify({
+			eventId: id,
+			changedFields: merge.changedFields,
+			conflictFields: merge.conflicts.map((conflict) => conflict.field),
+			assetId: input.assetId,
+		}));
 
 		await linkEventAsset(db, id, input, createdAt);
 		return { id, duplicate: true };
@@ -220,9 +291,10 @@ export async function saveWineEvent(
 				contact_email,
 				contact_phone,
 				wines_json,
+				wine_regions_json,
 				is_wine_event,
 				created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(asset_id) DO UPDATE SET
 				title = excluded.title,
 				event_date = excluded.event_date,
@@ -232,6 +304,7 @@ export async function saveWineEvent(
 				contact_email = excluded.contact_email,
 				contact_phone = excluded.contact_phone,
 				wines_json = excluded.wines_json,
+				wine_regions_json = excluded.wine_regions_json,
 				is_wine_event = excluded.is_wine_event`,
 		)
 		.bind(
@@ -246,6 +319,7 @@ export async function saveWineEvent(
 			input.event.contactEmail,
 			input.event.contactPhone,
 			JSON.stringify(input.event.wines),
+			JSON.stringify(input.event.wineRegions),
 			input.event.isWineEvent ? 1 : 0,
 			createdAt,
 		)

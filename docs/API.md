@@ -4,7 +4,7 @@
 
 The current public integration is the LINE webhook. A separate REST API is planned for the dashboard and event publication workflow.
 
-Current application version: `v0.2.0`
+Current application version: `v0.5.0`
 
 ## LINE webhook
 

@@ -74,16 +74,19 @@ LINE image / event link / website discovery
        9. Existing event  9. New event
               \             /
                v           v
-             10. Asset linking
+       10. Canonical event merge
                     |
                     v
-             11. Human review
+             11. Asset linking
+                    |
+                    v
+             12. Human review
              /        |        \
             v         v         v
          Publish     Edit      Ignore
             |
             v
-       12. Published event
+       13. Published event
             |
             v
        Website / LINE search
@@ -199,11 +202,19 @@ A successful pipeline run creates or updates one canonical draft event linked to
 
 The draft contains normalized fields, review flags, confidence data, and duplicate candidates. Reprocessing the same intake updates the draft rather than creating uncontrolled copies.
 
-### 10. Asset linking
+### 10. Canonical event merge
+
+Event resolution answers: “Does this incoming asset belong to an existing event?” Canonical event merge is a separate deterministic stage that answers: “Which incoming fields may safely enrich the canonical event?”
+
+For an existing event, the repository loads the complete canonical record and passes it with the incoming normalized event to a pure merge service. Missing scalar fields are filled, existing non-empty values are preserved, and materially different scalar values are reported as conflicts without being overwritten. Wines and wine regions are merged as stable, case-insensitive unions that retain existing order. Reprocessing the same asset produces the same canonical result.
+
+Conflicts are returned by the merge service and logged by field name; they are not persisted in D1. A new event initializes its canonical data directly from the normalized incoming event.
+
+### 11. Asset linking
 
 Every incoming asset is linked exactly once to the resolved event. Multiple flyers and supporting assets—such as menus, reminders, social posts, maps, and other material—may belong to one canonical event.
 
-### 11. Human review
+### 12. Human review
 
 The review dashboard presents the original source beside the structured draft.
 
@@ -217,7 +228,7 @@ Allowed decisions:
 
 AI extraction is advisory. A human review decision is the publication boundary.
 
-### 12. Publication
+### 13. Publication
 
 Publication changes an approved event to `published` and records `published_at`.
 

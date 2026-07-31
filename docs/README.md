@@ -37,7 +37,7 @@ LINE and website integrations are source adapters. They share the same downstrea
 
 ## Current status
 
-Version: `v0.2.0`
+Version: `v0.5.0`
 
 Implemented:
 
