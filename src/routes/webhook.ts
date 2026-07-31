@@ -133,7 +133,17 @@ async function processWebhookEvents(body: LineWebhookPayload, env: WorkerEnv): P
 }
 
 export async function handleWebhook(request: Request, env: WorkerEnv): Promise<Response> {
-	const body = (await request.json()) as LineWebhookPayload;
+	let body: LineWebhookPayload;
+
+	try {
+		body = (await request.json()) as LineWebhookPayload;
+	} catch {
+		return Response.json(
+			{ status: 'error', message: 'Invalid request body' },
+			{ status: 400 },
+		);
+	}
+
 	await processWebhookEvents(body, env);
 	return Response.json({ status: 'ok', received: true, service: APP_NAME, version: VERSION, timestamp: new Date().toISOString() });
 }
