@@ -4,6 +4,7 @@ import { extractAndStoreEvent } from '../services/event-extraction';
 import { normalizeUtf8Text, normalizeWineEvent } from '../services/event-normalizer';
 import { saveWineEvent } from '../services/event-repository';
 import { storeLineImageAsset } from '../services/event-intake';
+import { validateWineEvent } from '../services/event-validator';
 import {
 	downloadLineMessageContent,
 	pushToLine,
@@ -58,6 +59,7 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 
 	let eventStatus: 'completed' | 'failed' | 'skipped' = 'skipped';
 	let eventTitle: string | null = null;
+	let validationErrors: string[] = [];
 
 	const ocr = await extractAndStoreOcr(env.AI, env.EVENT_INTAKES, {
 		intakeId: asset.intakeId,
@@ -81,9 +83,15 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 
 		if (extraction.event) {
 			const normalizedEvent = normalizeWineEvent(extraction.event);
+			const validation = validateWineEvent({
+				title: eventTitle,
+				bookingUrl: normalizeUtf8Text(extraction.event.bookingUrl),
+				event: normalizedEvent,
+			});
 
 			console.log('RAW WINES:', JSON.stringify(extraction.event.wines));
 			console.log('NORMALIZED WINES:', JSON.stringify(normalizedEvent.wines));
+			console.log('EVENT VALIDATION:', JSON.stringify(validation));
 
 			await env.EVENT_INTAKES.put(
 				`intakes/${asset.intakeId}/assets/${asset.assetId}/event-normalized.json`,
@@ -91,19 +99,32 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 				{ httpMetadata: { contentType: 'application/json' } },
 			);
 
-			await saveWineEvent(env.DB, {
-				intakeId: asset.intakeId,
-				assetId: asset.assetId,
-				title: eventTitle,
-				event: normalizedEvent,
-			});
+			await env.EVENT_INTAKES.put(
+				`intakes/${asset.intakeId}/assets/${asset.assetId}/event-validation.json`,
+				JSON.stringify(validation, null, 2),
+				{ httpMetadata: { contentType: 'application/json' } },
+			);
+
+			if (validation.valid) {
+				await saveWineEvent(env.DB, {
+					intakeId: asset.intakeId,
+					assetId: asset.assetId,
+					title: eventTitle,
+					event: normalizedEvent,
+				});
+			} else {
+				eventStatus = 'failed';
+				validationErrors = validation.errors;
+			}
 		}
 	}
 
 	if (!message.pushTarget) return;
 	const finalText = eventStatus === 'completed'
-		? `Stored, OCR completed, event extracted, and database updated: ${eventTitle}. Intake: ${asset.intakeId}`
-		: `Stored, but OCR or event extraction failed. Intake: ${asset.intakeId}`;
+		? `Stored, OCR completed, event validated, and database updated: ${eventTitle}. Intake: ${asset.intakeId}`
+		: validationErrors.length > 0
+			? `Stored, but event validation failed: ${validationErrors.join(', ')}. Intake: ${asset.intakeId}`
+			: `Stored, but OCR or event extraction failed. Intake: ${asset.intakeId}`;
 
 	// The status notification is best-effort. A LINE API error must not cause
 	// Cloudflare Queues to process the completed intake again.
