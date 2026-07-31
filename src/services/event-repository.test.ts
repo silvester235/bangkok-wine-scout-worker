@@ -29,6 +29,7 @@ const schema = `
 		contact_email TEXT,
 		contact_phone TEXT,
 		wines_json TEXT NOT NULL DEFAULT '[]',
+		wine_regions_json TEXT NOT NULL DEFAULT '[]',
 		is_wine_event INTEGER NOT NULL DEFAULT 0,
 		created_at TEXT NOT NULL
 	);
@@ -147,7 +148,7 @@ describe('D1 event resolution', () => {
 		expect(result).toEqual({ id: 'intake-only-event:only-event', duplicate: false });
 	});
 
-	it('fills missing fields while preserving existing values', async () => {
+	it('an additional flyer enriches missing fields while preserving existing values', async () => {
 		await saveWineEvent(env.DB, input('flyer-1', {
 		title: 'California Wine Dinner',
 			event: {
@@ -186,7 +187,74 @@ describe('D1 event resolution', () => {
 			venue: 'Waldorf Astoria Bangkok',
 			contact_email: 'new@example.com',
 			contact_phone: '+66 2 111 1111',
-			wines_json: '["Existing detailed wine"]',
+			wines_json: '["Existing detailed wine","Less useful replacement"]',
+		});
+	});
+
+	it('a menu adds wines and regions without duplicating canonical entries', async () => {
+		const first = await saveWineEvent(env.DB, input('flyer-1', {
+			event: {
+				wines: ['Château Margaux', 'Cloudy Bay'],
+				wineRegions: ['Bordeaux'],
+			},
+		}));
+
+		const menu = input('menu-1', {
+			assetRole: 'menu',
+			title: 'California Wine Dinner Menu',
+			event: {
+				date: null,
+				startTime: null,
+				priceTHB: null,
+				wines: ['cloudy bay', ' Penfolds Bin 389 '],
+				wineRegions: [' bordeaux ', 'Napa Valley'],
+			},
+		});
+		await saveWineEvent(env.DB, menu);
+		await saveWineEvent(env.DB, menu);
+
+		const row = await env.DB.prepare(
+			'SELECT asset_id, wines_json, wine_regions_json FROM events WHERE id = ?',
+		).bind(first.id).first<{ asset_id: string; wines_json: string; wine_regions_json: string }>();
+
+		expect(row).toEqual({
+			asset_id: 'flyer-1',
+			wines_json: '["Château Margaux","Cloudy Bay","Penfolds Bin 389"]',
+			wine_regions_json: '["Bordeaux","Napa Valley"]',
+		});
+	});
+
+	it('does not overwrite conflicting canonical data', async () => {
+		const first = await saveWineEvent(env.DB, input('flyer-1'));
+		await saveWineEvent(env.DB, input('menu-1', {
+			assetRole: 'menu',
+			title: 'Reminder: California Wine Dinner',
+			event: {
+				date: null,
+				startTime: '20:00',
+				priceTHB: 4500,
+				contactEmail: 'other@example.com',
+				contactPhone: '+66 2 999 9999',
+			},
+		}));
+
+		const row = await env.DB.prepare(
+			`SELECT title, start_time, price_thb, contact_email, contact_phone
+			FROM events WHERE id = ?`,
+		).bind(first.id).first<{
+			title: string;
+			start_time: string;
+			price_thb: number;
+			contact_email: string;
+			contact_phone: string;
+		}>();
+
+		expect(row).toEqual({
+			title: 'California Wine Dinner',
+			start_time: '19:00',
+			price_thb: 3200,
+			contact_email: 'events@example.com',
+			contact_phone: '+66 2 000 0000',
 		});
 	});
 
@@ -200,6 +268,7 @@ describe('D1 event resolution', () => {
 		).bind('flyer-1').first<{ count: number; role: string }>();
 
 		expect(link).toEqual({ count: 1, role: 'flyer' });
+		expect((await env.DB.prepare('SELECT COUNT(*) AS count FROM events').first<{ count: number }>())?.count).toBe(1);
 	});
 });
 

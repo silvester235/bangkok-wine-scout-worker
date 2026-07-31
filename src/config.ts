@@ -2,7 +2,7 @@ import type { WorkerEnv } from './types/env';
 import type { AiEventResolutionOptions } from './services/event-repository';
 
 export const APP_NAME = 'Bangkok Wine Scout';
-export const VERSION = '0.3.1';
+export const VERSION = '0.5.0';
 
 function parseNumber(value: string, name: string): number {
 	const parsed = Number(value);

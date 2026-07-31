@@ -12,11 +12,12 @@ interface EventRow {
 	contact_email: string | null;
 	contact_phone: string | null;
 	wines_json: string;
+	wine_regions_json: string;
 	is_wine_event: number;
 	created_at: string;
 }
 
-function parseWines(value: string): unknown[] {
+function parseStringArray(value: string): unknown[] {
 	try {
 		const parsed = JSON.parse(value);
 		return Array.isArray(parsed) ? parsed : [];
@@ -39,6 +40,7 @@ export async function handleEvents(env: WorkerEnv): Promise<Response> {
 			contact_email,
 			contact_phone,
 			wines_json,
+			wine_regions_json,
 			is_wine_event,
 			created_at
 		FROM events
@@ -56,7 +58,8 @@ export async function handleEvents(env: WorkerEnv): Promise<Response> {
 		venue: row.venue,
 		contactEmail: row.contact_email,
 		contactPhone: row.contact_phone,
-		wines: parseWines(row.wines_json),
+		wines: parseStringArray(row.wines_json),
+		wineRegions: parseStringArray(row.wine_regions_json),
 		isWineEvent: row.is_wine_event === 1,
 		createdAt: row.created_at,
 	}));
