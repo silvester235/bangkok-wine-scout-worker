@@ -317,6 +317,12 @@ export async function saveWineEvent(
 		if (!existing) throw new Error(`Resolved event not found: ${resolvedEventId}`);
 
 		const merge = mergeEventData(existing, { title: input.title, ...input.event });
+		const slug = await createUniqueEventSlug(db, {
+			id,
+			title: merge.event.title,
+			venue: merge.event.venue,
+			date: merge.event.date,
+		});
 		await db
 			.prepare(
 				`UPDATE events SET
@@ -330,6 +336,7 @@ export async function saveWineEvent(
 					wines_json = ?,
 					wine_regions_json = ?,
 					is_wine_event = ?,
+					slug = ?,
 					status = 'published',
 					published_at = COALESCE(published_at, ?)
 				WHERE id = ?`,
@@ -345,6 +352,7 @@ export async function saveWineEvent(
 				JSON.stringify(merge.event.wines),
 				JSON.stringify(merge.event.wineRegions),
 				merge.event.isWineEvent ? 1 : 0,
+				slug,
 				createdAt,
 				id,
 			)
@@ -400,6 +408,10 @@ export async function saveWineEvent(
 				wines_json = excluded.wines_json,
 				wine_regions_json = excluded.wine_regions_json,
 				is_wine_event = excluded.is_wine_event,
+				slug = CASE
+					WHEN events.slug IS NULL OR events.slug = '' THEN excluded.slug
+					ELSE events.slug
+				END,
 				status = 'published',
 				published_at = COALESCE(events.published_at, excluded.published_at)`,
 		)

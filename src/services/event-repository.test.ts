@@ -279,6 +279,74 @@ describe('D1 event resolution', () => {
 		expect(result).toEqual({ id: 'intake-only-event:only-event', duplicate: false });
 	});
 
+	it('backfills a missing slug when a matched draft event is published', async () => {
+		const draft = await saveWineEvent(env.DB, input('draft-source'));
+		await env.DB.prepare(
+			`UPDATE events SET status = 'draft', published_at = NULL, slug = NULL WHERE id = ?`,
+		).bind(draft.id).run();
+
+		const published = await saveWineEvent(env.DB, input('publication-source'));
+		const row = await env.DB.prepare(
+			'SELECT status, published_at, slug FROM events WHERE id = ?',
+		).bind(draft.id).first<{ status: string; published_at: string | null; slug: string | null }>();
+
+		expect(published).toEqual({ id: draft.id, duplicate: true });
+		expect(row?.status).toBe('published');
+		expect(row?.published_at).not.toBeNull();
+		expect(row?.slug).toBe('california-wine-dinner-waldorf-astoria-bangkok-2026-08-15');
+	});
+
+	it('preserves an existing slug when a matched draft event is published', async () => {
+		const draft = await saveWineEvent(env.DB, input('draft-source'));
+		await env.DB.prepare(
+			`UPDATE events SET status = 'draft', published_at = NULL, slug = ? WHERE id = ?`,
+		).bind('legacy-stable-slug', draft.id).run();
+
+		await saveWineEvent(env.DB, input('publication-source'));
+		const row = await env.DB.prepare(
+			'SELECT status, published_at, slug FROM events WHERE id = ?',
+		).bind(draft.id).first<{ status: string; published_at: string | null; slug: string }>();
+
+		expect(row?.status).toBe('published');
+		expect(row?.published_at).not.toBeNull();
+		expect(row?.slug).toBe('legacy-stable-slug');
+	});
+
+	it('continues to create new published events with the existing slug structure', async () => {
+		const created = await saveWineEvent(env.DB, input('new-event'));
+		const row = await env.DB.prepare(
+			'SELECT status, published_at, slug FROM events WHERE id = ?',
+		).bind(created.id).first<{ status: string; published_at: string | null; slug: string | null }>();
+
+		expect(created.duplicate).toBe(false);
+		expect(row?.status).toBe('published');
+		expect(row?.published_at).not.toBeNull();
+		expect(row?.slug).toBe('california-wine-dinner-waldorf-astoria-bangkok-2026-08-15');
+	});
+
+	it('keeps a backfilled slug and event stable across an idempotent retry', async () => {
+		const draft = await saveWineEvent(env.DB, input('draft-source'));
+		await env.DB.prepare(
+			`UPDATE events SET status = 'draft', published_at = NULL, slug = '' WHERE id = ?`,
+		).bind(draft.id).run();
+		const publication = input('publication-source');
+
+		await saveWineEvent(env.DB, publication);
+		const firstSlug = await env.DB.prepare('SELECT slug FROM events WHERE id = ?')
+			.bind(draft.id).first<string>('slug');
+		await saveWineEvent(env.DB, publication);
+		const retried = await env.DB.prepare('SELECT slug FROM events WHERE id = ?')
+			.bind(draft.id).first<string>('slug');
+		const counts = await env.DB.prepare(
+			`SELECT COUNT(DISTINCT e.id) AS events, COUNT(ea.asset_id) AS assets
+			FROM events e LEFT JOIN event_assets ea ON ea.event_id = e.id`,
+		).first<{ events: number; assets: number }>();
+
+		expect(retried).toBe(firstSlug);
+		expect(firstSlug).toBe('california-wine-dinner-waldorf-astoria-bangkok-2026-08-15');
+		expect(counts).toEqual({ events: 1, assets: 2 });
+	});
+
 	it('an additional flyer enriches missing fields while preserving existing values', async () => {
 		await saveWineEvent(env.DB, input('flyer-1', {
 		title: 'California Wine Dinner',
