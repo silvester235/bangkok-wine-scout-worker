@@ -152,11 +152,16 @@ export async function findCandidateEvents(
 			) OR (
 				?1 IS NULL
 				AND (
-					(?2 IS NOT NULL AND (
-						LOWER(title) LIKE '%' || LOWER(?2) || '%'
-						OR LOWER(?2) LIKE '%' || LOWER(title) || '%'
+					(?2 IS NOT NULL AND title IS NOT NULL AND title <> '' AND (
+						instr(LOWER(title), LOWER(?2)) > 0
+						OR instr(LOWER(?2), LOWER(title)) > 0
 					))
-					OR (?3 IS NOT NULL AND LOWER(venue) LIKE '%' || LOWER(?3) || '%')
+					OR (
+						?3 IS NOT NULL
+						AND venue IS NOT NULL
+						AND venue <> ''
+						AND instr(LOWER(venue), LOWER(?3)) > 0
+					)
 				)
 			)
 			ORDER BY

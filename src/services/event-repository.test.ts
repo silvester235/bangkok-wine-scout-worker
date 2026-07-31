@@ -84,6 +84,16 @@ function input(
 	};
 }
 
+async function insertCandidate(id: string, title: string, venue: string | null = null): Promise<void> {
+	const createdAt = '2026-08-01T00:00:00.000Z';
+	await env.DB.prepare(
+		`INSERT INTO events (
+			id, intake_id, asset_id, title, event_date, venue, wines_json,
+			wine_regions_json, is_wine_event, status, published_at, slug, created_at
+		) VALUES (?, ?, ?, ?, NULL, ?, '[]', '[]', 1, 'published', ?, ?, ?)`,
+	).bind(id, `intake-${id}`, `asset-${id}`, title, venue, createdAt, `candidate-${id}`, createdAt).run();
+}
+
 beforeAll(async () => {
 	for (const statement of schema.split(';').map((value) => value.trim()).filter(Boolean)) {
 		await env.DB.prepare(statement).run();
@@ -112,6 +122,115 @@ describe('D1 event resolution', () => {
 			'intake-exact:exact',
 			'intake-nearby:nearby',
 		]);
+	});
+
+	it('finds a normal title candidate without a date', async () => {
+		await insertCandidate('normal-title', 'Bordeaux Wine Dinner');
+
+		const candidates = await findCandidateEvents(env.DB, {
+			title: 'Bordeaux Wine Dinner', date: null, venue: null,
+		});
+
+		expect(candidates.map(({ id }) => id)).toEqual(['normal-title']);
+	});
+
+	it.each([
+		['incoming title is contained in the stored title', 'Grand Bordeaux Wine Dinner', 'Bordeaux Wine'],
+		['stored title is contained in the incoming title', 'Bordeaux Wine', 'Grand Bordeaux Wine Dinner'],
+	] as const)('finds a title when the %s', async (_case, storedTitle, incomingTitle) => {
+		await insertCandidate('title-substring', storedTitle);
+
+		const candidates = await findCandidateEvents(env.DB, {
+			title: incomingTitle, date: null, venue: null,
+		});
+
+		expect(candidates.map(({ id }) => id)).toContain('title-substring');
+	});
+
+	it('finds a literal venue substring without a date', async () => {
+		await insertCandidate('venue-substring', 'Bordeaux Dinner', 'The Grand Ballroom Bangkok');
+
+		const candidates = await findCandidateEvents(env.DB, {
+			title: null, date: null, venue: 'Grand Ballroom',
+		});
+
+		expect(candidates.map(({ id }) => id)).toEqual(['venue-substring']);
+	});
+
+	it.each([
+		['%', 'Bordeaux 100% Wine Dinner', 'Bordeaux 100X Wine Dinner'],
+		['_', 'Bordeaux_Cru Dinner', 'BordeauxXCru Dinner'],
+	] as const)('treats %s in incoming titles as a literal character', async (literal, matching, nonMatching) => {
+		await insertCandidate('literal-match', matching);
+		await insertCandidate('wildcard-only-match', nonMatching);
+
+		const candidates = await findCandidateEvents(env.DB, {
+			title: literal, date: null, venue: null,
+		});
+
+		expect(candidates.map(({ id }) => id)).toEqual(['literal-match']);
+	});
+
+	it('handles a stored title containing many wildcard characters', async () => {
+		await insertCandidate('many-wildcards', `Bordeaux${'%_'.repeat(30_000)}`);
+
+		const candidates = await findCandidateEvents(env.DB, {
+			title: 'Bordeaux', date: null, venue: null,
+		});
+
+		expect(candidates.map(({ id }) => id)).toContain('many-wildcards');
+	});
+
+	it('handles a very long stored title', async () => {
+		await insertCandidate('long-stored', `Bordeaux${' wine'.repeat(20_000)}`);
+
+		const candidates = await findCandidateEvents(env.DB, {
+			title: 'Bordeaux', date: null, venue: null,
+		});
+
+		expect(candidates.map(({ id }) => id)).toContain('long-stored');
+	});
+
+	it('handles a very long incoming title', async () => {
+		await insertCandidate('long-incoming', 'Bordeaux Wine Dinner');
+
+		const candidates = await findCandidateEvents(env.DB, {
+			title: `Bordeaux Wine Dinner${' details'.repeat(20_000)}`, date: null, venue: null,
+		});
+
+		expect(candidates.map(({ id }) => id)).toContain('long-incoming');
+	});
+
+	it('uses title and venue lookup when the incoming date is null', async () => {
+		await insertCandidate('null-date', 'Bordeaux Wine Dinner', 'Siam Hotel Bangkok');
+
+		const candidates = await findCandidateEvents(env.DB, {
+			title: 'Bordeaux Wine', date: null, venue: 'Siam Hotel',
+		});
+
+		expect(candidates.map(({ id }) => id)).toEqual(['null-date']);
+	});
+
+	it('stores and idempotently retries the published Bordeaux flyer with one public asset', async () => {
+		const bordeauxFlyer = input('bordeaux-flyer', {
+			title: 'Bordeaux Wine Dinner',
+			isPublic: true,
+			r2ObjectKey: 'intakes/bordeaux/assets/flyer/original',
+			contentType: 'image/jpeg',
+			event: { date: null, venue: 'Siam Hotel Bangkok', wineRegions: ['Bordeaux'] },
+		});
+
+		const first = await saveWineEvent(env.DB, bordeauxFlyer);
+		const retry = await saveWineEvent(env.DB, bordeauxFlyer);
+		const row = await env.DB.prepare(
+			`SELECT e.status, COUNT(ea.asset_id) AS asset_count, MAX(ea.is_public) AS is_public
+			FROM events e JOIN event_assets ea ON ea.event_id = e.id
+			WHERE e.id = ? GROUP BY e.id, e.status`,
+		).bind(first.id).first<{ status: string; asset_count: number; is_public: number }>();
+
+		expect(retry).toEqual({ id: first.id, duplicate: true });
+		expect(row).toEqual({ status: 'published', asset_count: 1, is_public: 1 });
+		expect((await env.DB.prepare('SELECT COUNT(*) AS count FROM events').first<{ count: number }>())?.count).toBe(1);
 	});
 
 	it('reuses an exact duplicate instead of creating a second event', async () => {
