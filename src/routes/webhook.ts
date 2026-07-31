@@ -93,6 +93,7 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 			console.log('NORMALIZED WINES:', JSON.stringify(normalizedEvent.wines));
 			console.log('EVENT VALIDATION:', JSON.stringify(validation));
 
+			// Persist both artifacts before deciding whether the event is allowed into D1.
 			await env.EVENT_INTAKES.put(
 				`intakes/${asset.intakeId}/assets/${asset.assetId}/event-normalized.json`,
 				JSON.stringify(normalizedEvent, null, 2),
