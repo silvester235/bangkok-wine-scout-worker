@@ -1,5 +1,6 @@
 import { env, SELF } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { saveWineEvent } from '../services/event-repository';
 import { getBangkokLocalDate } from './events';
 
 declare module 'cloudflare:test' {
@@ -21,6 +22,7 @@ const schema = `
 		is_public INTEGER NOT NULL DEFAULT 0, r2_object_key TEXT, content_type TEXT,
 		PRIMARY KEY (event_id, asset_id)
 	);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_event_assets_asset_id ON event_assets(asset_id);
 `;
 
 function dateOffset(days: number): string {
@@ -39,6 +41,7 @@ async function addEvent(input: {
 	venue?: string;
 	wines?: string[];
 	regions?: string[];
+	slug?: string | null;
 }): Promise<void> {
 	await env.DB.prepare(
 		`INSERT INTO events (
@@ -59,7 +62,7 @@ async function addEvent(input: {
 		'2026-07-01T00:00:00.000Z',
 		input.status ?? 'published',
 		input.publishedAt === undefined ? '2026-07-02T00:00:00.000Z' : input.publishedAt,
-		`slug-${input.id}`,
+		input.slug === undefined ? `slug-${input.id}` : input.slug,
 	).run();
 }
 
@@ -108,6 +111,45 @@ describe('public event API', () => {
 
 		const { body } = await json('/api/events');
 		expect(body.data.map((event: { slug: string }) => event.slug)).toEqual(['slug-today-early', 'slug-today-late']);
+	});
+
+	it('lists a matched draft event after publication backfills its missing slug', async () => {
+		const eventDate = dateOffset(1);
+		await addEvent({
+			id: 'legacy-draft',
+			date: eventDate,
+			status: 'draft',
+			publishedAt: null,
+			title: 'Legacy Wine Dinner',
+			venue: 'Attico',
+			slug: null,
+		});
+
+		await saveWineEvent(env.DB, {
+			intakeId: 'publication-intake',
+			assetId: 'publication-flyer',
+			assetRole: 'flyer',
+			sourceType: 'line_image',
+			isPublic: true,
+			title: 'Legacy Wine Dinner',
+			event: {
+				date: eventDate,
+				startTime: '18:00',
+				priceTHB: 1290,
+				venue: 'Attico',
+				contactEmail: 'public@example.com',
+				contactPhone: '+66 2 000 0000',
+				wines: ['Riesling'],
+				wineRegions: ['Wachau'],
+				isWineEvent: true,
+			},
+		});
+
+		const { body } = await json('/api/events');
+
+		expect(body.data.map((event: { slug: string }) => event.slug)).toEqual([
+			`legacy-wine-dinner-attico-${eventDate}`,
+		]);
 	});
 
 	it('supports includePast and bounded limit validation', async () => {
