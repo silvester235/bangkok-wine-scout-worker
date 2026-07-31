@@ -10,12 +10,22 @@ export interface EventValidationInput {
 	title: string | null;
 	bookingUrl: string | null;
 	event: NormalizedWineEvent;
+	now?: Date;
 }
 
 function isValidIsoDate(value: string): boolean {
 	if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
 	const date = new Date(`${value}T00:00:00.000Z`);
 	return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function bangkokDate(value: Date): string {
+	return new Intl.DateTimeFormat('en-CA', {
+		timeZone: 'Asia/Bangkok',
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit',
+	}).format(value);
 }
 
 function isValidTime(value: string): boolean {
@@ -42,8 +52,13 @@ export function validateWineEvent(input: EventValidationInput): EventValidationR
 	if (!title) errors.push('Missing title');
 	else if (title.length < 5) errors.push('Title is too short');
 
-	if (!event.date) errors.push('Missing or invalid date');
-	else if (!isValidIsoDate(event.date)) errors.push('Invalid date');
+	if (!event.date) {
+		errors.push('Missing or invalid date');
+	} else if (!isValidIsoDate(event.date)) {
+		errors.push('Invalid date');
+	} else if (event.date < bangkokDate(input.now ?? new Date())) {
+		errors.push('Event date is in the past');
+	}
 
 	if (event.startTime !== null && !isValidTime(event.startTime)) {
 		errors.push('Invalid start time');
