@@ -1,6 +1,7 @@
 import { getPlatformProxy } from 'wrangler';
 import type { WorkerEnv } from '../src/types/env';
 import {
+	countEvents,
 	deleteEventWithAssetLinks,
 	findEventCleanupTargetBySlug,
 	isAssetLinkedToAnotherEvent,
@@ -15,6 +16,10 @@ import { deleteR2ObjectsWithExactPrefix, deleteStoredAssetArtifacts } from '../s
 
 const SUPPORTED_EVENT_SLUG = 'wine-dinner-by-chef-andrea-montella-tenute-girolamo-2026-08-05';
 const TARGET_EVENT_SLUG = 'wine-dinner-by-chef-andrea-montella-tenute-girolamo-2026-08-05';
+const DATABASE_BINDING = 'DB';
+const DATABASE_NAME = 'bangkok-wine-scout';
+const DATABASE_ID = '0fe8aec8-170f-47da-8abb-303cae3d1103';
+const CLEANUP_CONFIG = 'scripts/wrangler.delete-test-event.jsonc';
 
 async function main(): Promise<void> {
 	if (process.argv.length !== 2 || TARGET_EVENT_SLUG !== SUPPORTED_EVENT_SLUG) {
@@ -24,10 +29,19 @@ async function main(): Promise<void> {
 	}
 
 	const platform = await getPlatformProxy<WorkerEnv>({
-		configPath: 'wrangler.jsonc',
+		configPath: CLEANUP_CONFIG,
 		remoteBindings: true,
 	});
 	try {
+		if (!platform.env.DB || !platform.env.EVENT_INTAKES) {
+			throw new Error('Required cleanup bindings were not resolved.');
+		}
+		console.log(`Resolved database binding: ${DATABASE_BINDING}`);
+		console.log('Remote mode active: true');
+		console.log(`Resolved database: ${DATABASE_NAME} (${DATABASE_ID})`);
+		console.log(`Events count: ${await countEvents(platform.env.DB)}`);
+		console.log(`Lookup slug: ${TARGET_EVENT_SLUG}`);
+
 		const target = await findEventCleanupTargetBySlug(platform.env.DB, TARGET_EVENT_SLUG);
 		if (!target) {
 			console.log('Event not found.');

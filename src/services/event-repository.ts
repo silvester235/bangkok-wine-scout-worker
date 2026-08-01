@@ -56,6 +56,11 @@ export interface EventCleanupTarget {
 	assets: EventCleanupAsset[];
 }
 
+export async function countEvents(db: D1Database): Promise<number> {
+	const row = await db.prepare('SELECT COUNT(*) AS count FROM events').first<{ count: number }>();
+	return row?.count ?? 0;
+}
+
 export async function findEventCleanupTargetBySlug(db: D1Database, slug: string): Promise<EventCleanupTarget | null> {
 	const event = await db.prepare('SELECT id, slug FROM events WHERE slug = ? LIMIT 1')
 		.bind(slug).first<{ id: string; slug: string }>();

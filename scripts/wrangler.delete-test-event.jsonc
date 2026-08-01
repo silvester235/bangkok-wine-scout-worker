@@ -1,0 +1,22 @@
+{
+	"$schema": "../node_modules/wrangler/config-schema.json",
+	"name": "bangkok-wine-scout-worker",
+	"main": "../src/index.ts",
+	"compatibility_date": "2026-07-28",
+	"compatibility_flags": ["nodejs_compat"],
+	"r2_buckets": [
+		{
+			"binding": "EVENT_INTAKES",
+			"bucket_name": "bangkok-wine-scout-intakes",
+			"remote": true
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "bangkok-wine-scout",
+			"database_id": "0fe8aec8-170f-47da-8abb-303cae3d1103",
+			"remote": true
+		}
+	]
+}

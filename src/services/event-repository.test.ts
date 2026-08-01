@@ -5,6 +5,7 @@ import { getOptionalAiEventResolutionOptions } from '../config';
 import type { WorkerEnv } from '../types/env';
 import {
 	findCandidateEvents,
+	findEventCleanupTargetBySlug,
 	findEventIdByAssetId,
 	saveWineEvent,
 	type AiEventResolutionOptions,
@@ -108,6 +109,23 @@ beforeEach(async () => {
 });
 
 describe('D1 event resolution', () => {
+	it('finds the cleanup target through the exact production slug lookup path', async () => {
+		const slug = 'wine-dinner-by-chef-andrea-montella-tenute-girolamo-2026-08-05';
+		await insertCandidate('line-625354020655727035:line-message-625354020655727035', 'WINE DINNER BY CHEF ANDREA MONTELLA');
+		await env.DB.prepare('UPDATE events SET slug = ? WHERE id = ?').bind(
+			slug,
+			'line-625354020655727035:line-message-625354020655727035',
+		).run();
+
+		const target = await findEventCleanupTargetBySlug(env.DB, slug);
+
+		expect(target).toMatchObject({
+			id: 'line-625354020655727035:line-message-625354020655727035',
+			slug,
+			assets: [],
+		});
+	});
+
 	it('returns bounded candidates with the exact date first', async () => {
 		await saveWineEvent(env.DB, input('nearby', { event: { date: '2026-08-14' } }));
 		await saveWineEvent(env.DB, input('exact'));
