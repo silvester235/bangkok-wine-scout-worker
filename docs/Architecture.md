@@ -384,6 +384,10 @@ or identity field is found in an asset, that asset is linked to the event. The
 strongest identity-bearing flyer becomes `main`; content-only menu evidence becomes
 `menu` when there is exactly one event candidate. Multi-event batches require
 identity evidence so a shared menu is not attached arbitrarily.
+Course headings, repeated vintages, pairings, and food-description structure can
+also establish a supplementary menu relationship when normalization means no menu
+field survives verbatim. A different detected event date/title, or multiple strong
+candidate owners, keeps the asset unassigned for review.
 
 Queue delivery is treated as at-least-once. LINE message IDs, asset IDs, and batch
 associations are unique. Asset linking is an upsert. Only one consumer can change a

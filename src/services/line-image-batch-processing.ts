@@ -65,7 +65,8 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 	}
 	const attribution=attributeContributingAssets(analysis.events,contexts);
 	analysis={...analysis,events:attribution.events,unassignedAssets:attribution.unassignedAssets,ambiguous:attribution.unassignedAssets.length===0&&attribution.events.length>0?false:analysis.ambiguous};
-	console.log({event:'line_batch_deterministic_asset_attribution',batchId:claimed.id,contributions:attribution.contributions,assetAssignments:analysis.events.map((event,candidateIndex)=>({candidateIndex,assignments:event.assetAssignments})),unassignedAssets:analysis.unassignedAssets});
+	for(const contribution of attribution.contributions) console.log({event:'line_batch_deterministic_asset_attribution',batchId:claimed.id,...contribution});
+	console.log({event:'line_batch_deterministic_asset_attribution_summary',batchId:claimed.id,assetAssignments:analysis.events.map((event,candidateIndex)=>({candidateIndex,assignments:event.assetAssignments})),unassignedAssets:analysis.unassignedAssets});
 	console.log({event:'line_batch_fallback_status',batchId:claimed.id,fallbackInvoked,fallbackRecovered,fallbackReason:analysis.diagnostics.fallbackReason});
 	console.log({
 		event: 'line_batch_analysis_result',
