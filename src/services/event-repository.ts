@@ -42,6 +42,49 @@ export interface SaveWineEventResult {
 	duplicate: boolean;
 }
 
+export interface EventCleanupAsset {
+	assetId: string;
+	intakeId: string;
+	sourceType: EventSourceType;
+	sourceMessageId: string | null;
+	r2ObjectKey: string | null;
+}
+
+export interface EventCleanupTarget {
+	id: string;
+	slug: string;
+	assets: EventCleanupAsset[];
+}
+
+export async function findEventCleanupTargetBySlug(db: D1Database, slug: string): Promise<EventCleanupTarget | null> {
+	const event = await db.prepare('SELECT id, slug FROM events WHERE slug = ? LIMIT 1')
+		.bind(slug).first<{ id: string; slug: string }>();
+	if (!event) return null;
+	const rows = await db.prepare(
+		`SELECT asset_id, intake_id, source_type, source_message_id, r2_object_key
+		 FROM event_assets WHERE event_id = ? ORDER BY linked_at, asset_id`,
+	).bind(event.id).all<{ asset_id: string; intake_id: string; source_type: EventSourceType; source_message_id: string | null; r2_object_key: string | null }>();
+	return { ...event, assets: (rows.results ?? []).map((row) => ({
+		assetId: row.asset_id, intakeId: row.intake_id, sourceType: row.source_type,
+		sourceMessageId: row.source_message_id, r2ObjectKey: row.r2_object_key,
+	})) };
+}
+
+export async function isAssetLinkedToAnotherEvent(db: D1Database, assetId: string, eventId: string): Promise<boolean> {
+	return await db.prepare('SELECT 1 AS found FROM event_assets WHERE asset_id = ? AND event_id <> ? LIMIT 1')
+		.bind(assetId, eventId).first<{ found: number }>() !== null;
+}
+
+export async function deleteEventWithAssetLinks(db: D1Database, eventId: string, assetIds: string[]): Promise<{ eventAssets: number; event: number }> {
+	const statements = assetIds.map((assetId) => db.prepare('DELETE FROM event_assets WHERE event_id = ? AND asset_id = ?').bind(eventId, assetId));
+	statements.push(db.prepare('DELETE FROM events WHERE id = ?').bind(eventId));
+	const results = await db.batch(statements);
+	return {
+		eventAssets: results.slice(0, -1).reduce((sum, result) => sum + (result.meta.changes ?? 0), 0),
+		event: results.at(-1)?.meta.changes ?? 0,
+	};
+}
+
 export async function findEventIdByAssetId(db: D1Database, assetId: string): Promise<string | null> {
 	const row = await db.prepare(
 		'SELECT event_id FROM event_assets WHERE asset_id = ? LIMIT 1',

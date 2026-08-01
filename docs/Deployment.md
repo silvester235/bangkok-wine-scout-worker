@@ -100,3 +100,10 @@ Use Cloudflare deployment history to restore a known working version. Code chang
 - Keep secrets outside the repository.
 - Deploy small, reviewable changes.
 - Update documentation when bindings, routes, or secrets change.
+# LINE image batching
+
+Set `LINE_IMAGE_BATCH_WINDOW_SECONDS` to a positive integer no greater than 86400.
+The default and recommended value is `15`. Queue producers must support per-message
+`delaySeconds`; no additional queue is required. Apply migration
+`0007_line_image_batches.sql` before deploying the Worker. If bindings change, run
+`npx wrangler types` as required by the project workflow.

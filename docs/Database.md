@@ -224,3 +224,13 @@ Potential duplicates should be shown during review instead of being deleted auto
 3. Create `events`
 4. Add indexes
 5. Add `event_field_confidence` when the review interface needs it
+# LINE image batches (migration 0007)
+
+`line_image_batches` stores durable collection and processing state, timestamps,
+conversation identity, result event IDs, retry diagnostics, and notification state.
+Only one `collecting` row may exist per conversation.
+
+`line_image_batch_assets` stores the immutable association of each LINE message and
+R2 asset to one batch, including order, content type, object key, and received time.
+Unique constraints on `line_message_id` and `asset_id` enforce webhook and asset
+idempotency without changing existing `events` or `event_assets` rows.

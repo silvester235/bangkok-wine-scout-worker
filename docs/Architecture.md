@@ -348,3 +348,45 @@ Provides read-only published event lists, slug-based detail, asset summaries, an
 - AI output is treated as a proposal, never as authoritative data.
 - Public consumers read published events, not raw intakes or failed technical processing artifacts.
 - Bottle recognition and cellar management are outside the current scope.
+# LINE multi-asset ingestion
+
+LINE image messages are provisionally grouped by conversation in durable D1
+`line_image_batches` records. Each original image remains a separate R2 asset and
+has one `line_image_batch_assets` row. A per-message Queue delay (configured by
+`LINE_IMAGE_BATCH_WINDOW_SECONDS`, default 15 seconds) implements inactivity
+debouncing; the consumer re-reads and compare-and-sets the exact latest timestamp
+before claiming a batch.
+
+The collection window is not an event-identity signal. After the batch is claimed,
+OCR runs independently for every asset and batch analysis receives labeled asset
+boundaries, ordering, timestamps, content types, OCR, and available LINE text. It
+may produce zero, one, or multiple event candidates and assigns only supported
+roles: `main`, `flyer`, `menu`, `reminder`, `social`, `map`, or `other`.
+
+Every candidate still passes through D1 candidate lookup, the deterministic Event
+Matcher, optional AI resolution, and Event Merger. A code-level publication guard
+requires a meaningful non-fallback title, a date, and corroborating event metadata.
+Menu/wine text alone is never publishable. Unassigned or ambiguous assets remain
+stored with OCR and batch-analysis artifacts and the batch becomes `needs_review`.
+Events are saved only after whole-batch analysis, with all assigned assets linked.
+
+If batch AI output is malformed, schema-invalid, contains no events, or assigns no
+assets, the processor records the raw response and validation diagnostics and runs
+the established single-asset extractor for every asset. Strong independently
+identified flyers become candidates. When there is exactly one strong primary, a
+menu-like asset without its own conflicting identity may be assigned as `menu`.
+Menu-only fallback results remain unpublished; two strong flyers remain separate.
+
+Before publication, deterministic asset attribution rebuilds assignments from the
+final enriched candidate and each asset's bounded OCR/LINE evidence. AI assignments
+are role hints only. If a surviving wine, menu item, venue, contact, booking detail,
+or identity field is found in an asset, that asset is linked to the event. The
+strongest identity-bearing flyer becomes `main`; content-only menu evidence becomes
+`menu` when there is exactly one event candidate. Multi-event batches require
+identity evidence so a shared menu is not attached arbitrarily.
+
+Queue delivery is treated as at-least-once. LINE message IDs, asset IDs, and batch
+associations are unique. Asset linking is an upsert. Only one consumer can change a
+batch from `collecting` to `processing`; a stale delayed message cannot claim it.
+Once claimed, the batch is closed and a later image starts a new collecting batch.
+Completion and the summary-notification marker are compare-and-set operations.

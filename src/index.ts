@@ -2,6 +2,7 @@ import { handlePublicApi } from './routes/events';
 import { handleHealth } from './routes/health';
 import { handleHome } from './routes/home';
 import { handleWebhook, processImageMessage, type ImageProcessingMessage } from './routes/webhook';
+import { processImageBatch, type BatchProcessingMessage } from './services/line-image-batch-processing';
 import type { WorkerEnv } from './types/env';
 import { notFoundResponse } from './utils/responses';
 
@@ -28,10 +29,11 @@ export default {
 		return notFoundResponse();
 	},
 
-	async queue(batch: MessageBatch<ImageProcessingMessage>, env: WorkerEnv): Promise<void> {
+	async queue(batch: MessageBatch<ImageProcessingMessage|BatchProcessingMessage>, env: WorkerEnv): Promise<void> {
 		for (const message of batch.messages) {
 			try {
-				await processImageMessage(message.body, env);
+				if(message.body.type==='process_batch') await processImageBatch(message.body,env);
+				else await processImageMessage(message.body, env);
 				message.ack();
 			} catch (error) {
 				console.error('IMAGE PROCESSING FAILED:', error);
@@ -39,4 +41,4 @@ export default {
 			}
 		}
 	},
-} satisfies ExportedHandler<WorkerEnv, ImageProcessingMessage>;
+} satisfies ExportedHandler<WorkerEnv, ImageProcessingMessage|BatchProcessingMessage>;

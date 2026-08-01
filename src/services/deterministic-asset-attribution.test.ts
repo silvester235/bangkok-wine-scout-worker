@@ -1,0 +1,12 @@
+import { describe,expect,it } from 'vitest';
+import type { BatchAssetContext,BatchExtractedEvent } from './batch-event-extraction';
+import { attributeContributingAssets } from './deterministic-asset-attribution';
+
+const event=(assignments:BatchExtractedEvent['assetAssignments']=[{assetId:'flyer',role:'flyer'}]):BatchExtractedEvent=>({isWineEvent:true,title:'Tenute Girolamo Wine Dinner',venue:null,address:null,date:'2026-08-05',startTime:'18:30',endTime:null,timezone:null,price:'THB 1800++',currency:'THB',bookingUrl:null,contact:null,wines:['Primitivo di Manduria','Negroamaro'],wineRegions:['Puglia'],menu:['Roasted lamb'],notes:[],confidence:.9,assetAssignments:assignments});
+const asset=(assetId:string,ordinal:number,ocrText:string):BatchAssetContext=>({assetId,intakeId:`i-${assetId}`,ordinal,receivedAt:'2026-08-01T00:00:00Z',contentType:'image/jpeg',ocrText});
+
+describe('deterministic asset attribution',()=>{
+	it('promotes the identity flyer to main and links a contributing menu',()=>{const result=attributeContributingAssets([event()],[asset('flyer',1,'TENUTE GIROLAMO WINE DINNER WEDNESDAY 5TH AUGUST 2026 18:30 THB 1800'),asset('menu',2,'MENU Roasted lamb Primitivo di Manduria Negroamaro Puglia')]);expect(result.events[0].assetAssignments).toEqual([{assetId:'flyer',role:'main'},{assetId:'menu',role:'menu'}]);expect(result.unassignedAssets).toEqual([]);expect(result.contributions.find((item)=>item.assetId==='menu')).toEqual(expect.objectContaining({assigned:true,role:'menu',contributedFields:expect.arrayContaining(['wines:Primitivo di Manduria','menu:Roasted lamb'])}))});
+	it('leaves a non-contributing secondary asset unassigned',()=>{const result=attributeContributingAssets([event()],[asset('flyer',1,'TENUTE GIROLAMO WINE DINNER 5 AUGUST 2026'),asset('other',2,'PRIVATE SEATING PLAN TABLE 4')]);expect(result.unassignedAssets).toEqual(['other']);expect(result.events[0].assetAssignments).toEqual([{assetId:'flyer',role:'main'}])});
+	it('does not attach content-only evidence arbitrarily when multiple events exist',()=>{const result=attributeContributingAssets([event([{assetId:'flyer',role:'flyer'}]),{...event([{assetId:'flyer2',role:'flyer'}]),title:'Another Wine Dinner',date:'2026-08-12'}],[asset('flyer',1,'TENUTE GIROLAMO WINE DINNER 5 AUGUST 2026'),asset('flyer2',2,'ANOTHER WINE DINNER 12 AUGUST 2026'),asset('menu',3,'MENU Primitivo di Manduria')]);expect(result.unassignedAssets).toEqual(['menu'])});
+});

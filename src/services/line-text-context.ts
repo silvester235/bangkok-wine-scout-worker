@@ -120,3 +120,23 @@ export async function markLineTextContextLinked(
 		.bind(eventId, messageId)
 		.run();
 }
+
+export async function deleteAssetSpecificLineTextContexts(
+	db: D1Database,
+	eventId: string,
+	assetIds: string[],
+	sourceMessageIds: string[],
+): Promise<number> {
+	let deleted = 0;
+	for (const assetId of assetIds) {
+		const result = await db.prepare('DELETE FROM line_text_contexts WHERE linked_event_id = ? AND linked_image_asset_id = ?')
+			.bind(eventId, assetId).run();
+		deleted += result.meta.changes ?? 0;
+	}
+	for (const messageId of sourceMessageIds) {
+		const result = await db.prepare('DELETE FROM line_text_contexts WHERE linked_event_id = ? AND message_id = ?')
+			.bind(eventId, messageId).run();
+		deleted += result.meta.changes ?? 0;
+	}
+	return deleted;
+}
