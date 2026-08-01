@@ -110,7 +110,7 @@ beforeEach(async () => {
 
 describe('D1 event resolution', () => {
 	it('finds the cleanup target through the exact production slug lookup path', async () => {
-		const slug = 'wine-dinner-by-chef-andrea-montella-tenute-girolamo-2026-08-05';
+		const slug = 'wine-dinner-by-chef-andrea-montella-centara-grand-at-centralwordl-2026-08-05';
 		await insertCandidate('line-625354020655727035:line-message-625354020655727035', 'WINE DINNER BY CHEF ANDREA MONTELLA');
 		await env.DB.prepare('UPDATE events SET slug = ? WHERE id = ?').bind(
 			slug,

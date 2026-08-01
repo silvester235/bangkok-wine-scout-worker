@@ -14,8 +14,8 @@ import {
 import { deleteAssetSpecificLineTextContexts } from '../src/services/line-text-context';
 import { deleteR2ObjectsWithExactPrefix, deleteStoredAssetArtifacts } from '../src/services/event-intake';
 
-const SUPPORTED_EVENT_SLUG = 'wine-dinner-by-chef-andrea-montella-tenute-girolamo-2026-08-05';
-const TARGET_EVENT_SLUG = 'wine-dinner-by-chef-andrea-montella-tenute-girolamo-2026-08-05';
+const SUPPORTED_EVENT_SLUG = 'wine-dinner-by-chef-andrea-montella-centara-grand-at-centralwordl-2026-08-05';
+const TARGET_EVENT_SLUG = 'wine-dinner-by-chef-andrea-montella-centara-grand-at-centralwordl-2026-08-05';
 const DATABASE_BINDING = 'DB';
 const DATABASE_NAME = 'bangkok-wine-scout';
 const DATABASE_ID = '0fe8aec8-170f-47da-8abb-303cae3d1103';
