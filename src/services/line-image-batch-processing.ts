@@ -1,4 +1,4 @@
-import { getOptionalAiEventResolutionOptions, getOptionalLineTextContextWindowSeconds } from '../config';
+import { getLineMessageBatchWindowSeconds, getOptionalAiEventResolutionOptions } from '../config';
 import type { WorkerEnv } from '../types/env';
 import { extractBatchEvents, type BatchAssetContext } from './batch-event-extraction';
 import { recoverBatchEventsWithSingleAssetFallback } from './batch-event-fallback';
@@ -6,19 +6,19 @@ import { attributeContributingAssets } from './deterministic-asset-attribution';
 import { normalizeUtf8Text, normalizeWineEvent } from './event-normalizer';
 import { saveWineEvent, type EventSourceAssetInput } from './event-repository';
 import { validatePublishableEvent } from './event-publication-guard';
-import { claimLineTextContext, markLineTextContextLinked } from './line-text-context';
-import { claimReadyBatch, completeBatch, failBatch, getBatch, listBatchAssets, markBatchNotificationSent, retryFailedBatch } from './line-image-batch-repository';
+import { markLineTextContextLinked } from './line-text-context';
+import { claimClosedBatch, claimReadyBatch, completeBatch, failBatch, getBatch, listBatchAssets, listBatchTexts, markBatchNotificationSent, retryFailedBatch } from './line-image-batch-repository';
 import { pushToLine } from './line';
 import { extractAndStoreOcr } from './ocr';
 
-export interface BatchProcessingMessage { type:'process_batch'; batchId:string; expectedLastReceivedAt:string }
+export interface BatchProcessingMessage { type:'process_batch'; batchId:string; expectedLastReceivedAt:string; closedProcessingToken?:string }
 
 export async function processImageBatch(message:BatchProcessingMessage,env:WorkerEnv):Promise<void> {
 	const current=await getBatch(env.DB,message.batchId);
-	if(!current||!['collecting','failed'].includes(current.status)) return;
-	const windowSeconds=Number(env.LINE_IMAGE_BATCH_WINDOW_SECONDS||'15');
+	if(!current||(!['collecting','failed'].includes(current.status)&&!(message.closedProcessingToken&&current.status==='processing'))) return;
+	const windowSeconds=getLineMessageBatchWindowSeconds(env);
 	const readyBefore=new Date(Date.now()-windowSeconds*1000).toISOString();
-	const claimed=current.status==='failed'?await retryFailedBatch(env.DB,message.batchId):await claimReadyBatch(env.DB,message.batchId,message.expectedLastReceivedAt,readyBefore);
+	const claimed=message.closedProcessingToken&&current.status==='processing'?await claimClosedBatch(env.DB,message.batchId,message.closedProcessingToken):current.status==='failed'?await retryFailedBatch(env.DB,message.batchId):await claimReadyBatch(env.DB,message.batchId,message.expectedLastReceivedAt,readyBefore);
 	if(!claimed) {
 		const latest=await getBatch(env.DB,message.batchId);
 		if(latest?.status==='collecting') {
@@ -30,9 +30,12 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 	try {
 
 	const assets=await listBatchAssets(env.DB,claimed.id);
+	const texts=await listBatchTexts(env.DB,claimed.id);
 	const contexts:BatchAssetContext[]=[];
+	const imageContexts:BatchAssetContext[]=[];
 	const sourceAssets=new Map<string,EventSourceAssetInput>();
-	for(const asset of assets) {
+	const combinedText=texts.map((text,index)=>`LINE TEXT ${index+1}\nmessageId: ${text.messageId}\nreceivedAt: ${text.receivedAt}\n${text.text}`).join('\n\n---\n\n');
+	for(const [assetIndex,asset] of assets.entries()) {
 		const object=await env.EVENT_INTAKES.get(asset.r2ObjectKey);
 		if(!object) throw new Error(`Missing R2 image ${asset.r2ObjectKey}`);
 		const content=await object.arrayBuffer();
@@ -47,12 +50,12 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 			error: ocr.error ?? null,
 			model: ocr.model,
 		});
-		const textWindow=getOptionalLineTextContextWindowSeconds(env);
-		const lineText=textWindow?await claimLineTextContext(env.DB,{conversationKey:asset.conversationKey,imageAssetId:asset.assetId,imageReceivedAt:asset.receivedAt,windowSeconds:textWindow}):null;
-		contexts.push({assetId:asset.assetId,intakeId:asset.intakeId,ordinal:asset.ordinal,receivedAt:asset.receivedAt,contentType:asset.contentType,ocrText:ocr.status==='completed'?ocr.text:'',lineText:lineText?.text});
+		const context={assetId:asset.assetId,intakeId:asset.intakeId,ordinal:asset.ordinal,receivedAt:asset.receivedAt,contentType:asset.contentType,ocrText:ocr.status==='completed'?ocr.text:'',lineText:assetIndex===0?combinedText:null};
+		contexts.push(context);imageContexts.push(context);
 		sourceAssets.set(asset.assetId,{intakeId:asset.intakeId,assetId:asset.assetId,sourceType:'line_image',sourceMessageId:asset.lineMessageId,isPublic:true,r2ObjectKey:asset.r2ObjectKey,contentType:asset.contentType});
-		if(lineText) sourceAssets.set(lineText.assetId,{intakeId:asset.intakeId,assetId:lineText.assetId,sourceType:'line_text',sourceMessageId:lineText.messageId,textContent:lineText.text,isPublic:false});
 	}
+	for(const text of texts)sourceAssets.set(text.assetId,{intakeId:`line-text-${text.messageId}`,assetId:text.assetId,sourceType:'line_text',sourceMessageId:text.messageId,textContent:text.text,isPublic:false});
+	if(assets.length===0&&texts.length>0){const first=texts[0];contexts.push({assetId:first.assetId,intakeId:`line-text-${first.messageId}`,ordinal:first.ordinal,receivedAt:first.receivedAt,contentType:'text/plain',ocrText:'',lineText:combinedText});}
 
 	let analysis=await extractBatchEvents(env.AI,env.EVENT_INTAKES,claimed.id,contexts);
 	const fallbackInvoked=analysis.diagnostics.fallbackRequired;
@@ -63,7 +66,9 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 		fallbackRecovered=fallback.events.length>0;
 		analysis={...analysis,events:fallback.events,unassignedAssets:fallback.unassignedAssets,ambiguous:fallback.ambiguous};
 	}
-	const attribution=attributeContributingAssets(analysis.events,contexts);
+	const multipleCandidates=analysis.events.length>1;
+	if(multipleCandidates){console.warn({event:'line_message_batch_multiple_events_rejected',batchId:claimed.id,candidateCount:analysis.events.length,reason:'one LINE message batch may publish at most one event'});analysis={...analysis,events:[],unassignedAssets:assets.map((asset)=>asset.assetId),ambiguous:true};}
+	const attribution=attributeContributingAssets(analysis.events,imageContexts);
 	analysis={...analysis,events:attribution.events,unassignedAssets:attribution.unassignedAssets,ambiguous:attribution.unassignedAssets.length===0&&attribution.events.length>0?false:analysis.ambiguous};
 	for(const contribution of attribution.contributions) console.log({event:'line_batch_deterministic_asset_attribution',batchId:claimed.id,...contribution});
 	console.log({event:'line_batch_deterministic_asset_attribution_summary',batchId:claimed.id,assetAssignments:analysis.events.map((event,candidateIndex)=>({candidateIndex,assignments:event.assetAssignments})),unassignedAssets:analysis.unassignedAssets});
@@ -126,24 +131,24 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 			exactReason: guard.exactReason,
 		});
 		await env.EVENT_INTAKES.put(`line-batches/${claimed.id}/candidates/${candidateIndex}/publication-guard.json`,JSON.stringify({mergedEventCandidate,evaluation:guard},null,2),{httpMetadata:{contentType:'application/json'}});
-		if(!guard.publishable||candidate.assetAssignments.length===0) { rejectedCandidateCount++; continue; }
+		if(!guard.publishable) { rejectedCandidateCount++; continue; }
 		const [primaryAssignment,...relatedAssignments]=candidate.assetAssignments;
-		const primary=sourceAssets.get(primaryAssignment.assetId); if(!primary) continue;
+		const primary=primaryAssignment?sourceAssets.get(primaryAssignment.assetId):texts[0]?sourceAssets.get(texts[0].assetId):undefined; if(!primary) continue;
 		const related:EventSourceAssetInput[]=[];
 		for(const assignment of relatedAssignments){const asset=sourceAssets.get(assignment.assetId);if(asset)related.push({...asset,assetRole:assignment.role});}
-		// Include claimed LINE text artifacts belonging to assigned image assets.
-		for(const asset of sourceAssets.values()) if(asset.sourceType==='line_text') related.push(asset);
-		const saved=await saveWineEvent(env.DB,{...primary,assetRole:primaryAssignment.role,relatedAssets:related,title,event:normalized},getOptionalAiEventResolutionOptions(env));
+		for(const asset of sourceAssets.values()) if(asset.sourceType==='line_text'&&asset.assetId!==primary.assetId) related.push(asset);
+		const saved=await saveWineEvent(env.DB,{...primary,assetRole:primaryAssignment?.role??'main',relatedAssets:related,title,event:normalized},getOptionalAiEventResolutionOptions(env));
 		eventIds.push(saved.id); titles.push(title??'Untitled event');
 		for(const asset of sourceAssets.values()) if(asset.sourceType==='line_text') await markLineTextContextLinked(env.DB,asset.sourceMessageId!,saved.id);
 	}
-	const unresolved=analysis.unassignedAssets.length>0||eventIds.length<analysis.events.length||analysis.ambiguous;
+	const unresolved=eventIds.length<analysis.events.length||analysis.ambiguous;
 	const status=eventIds.length===0||unresolved?'needs_review':'completed';
 	console.log({
 		event: 'line_batch_completion_decision',
 		batchId: claimed.id,
 		status,
 		assetCount: assets.length,
+		textMessageCount:texts.length,
 		extractedCandidateCount: analysis.events.length,
 		publishedEventCount: eventIds.length,
 		unassignedAssets: analysis.unassignedAssets,
@@ -160,12 +165,12 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 	});
 	if(!await completeBatch(env.DB,claimed.id,status,eventIds)) return;
 	if(!claimed.pushTarget||!await markBatchNotificationSent(env.DB,claimed.id)) return;
-	const unresolvedCount=assets.length-new Set(analysis.events.flatMap((e)=>e.assetAssignments.map((a)=>a.assetId))).size;
+	const countSummary=[assets.length?`${assets.length} image${assets.length===1?'':'s'}`:'',texts.length?`${texts.length} text message${texts.length===1?'':'s'}`:''].filter(Boolean).join(' and ');
 	const summary=eventIds.length===0
 		? analysis.events.length===0
-			? `Processed ${assets.length} image${assets.length===1?'':'s'}, but no event candidate could be extracted${fallbackInvoked?' after batch analysis and single-image fallback':''}.`
-			: `Processed ${assets.length} image${assets.length===1?'':'s'}, but ${rejectedCandidateCount} event candidate${rejectedCandidateCount===1?' was':'s were'} rejected because required event details were incomplete.`
-		: `Processed ${assets.length} image${assets.length===1?'':'s'} and published ${eventIds.length} event${eventIds.length===1?'':'s'}: ${titles.join(', ')}.${fallbackRecovered?' Batch analysis failed, but single-image fallback recovered the event.':''}${unresolvedCount?` Kept ${unresolvedCount} asset${unresolvedCount===1?'':'s'} for review.`:''}`;
+			? `Processed ${countSummary}, but no event candidate could be extracted${fallbackInvoked?' after batch analysis and single-message fallback':''}.`
+			: `Processed ${countSummary}, but ${rejectedCandidateCount} event candidate${rejectedCandidateCount===1?' was':'s were'} rejected because required event details were incomplete.`
+		: `Processed ${countSummary} and published 1 event: ${titles[0]}.${fallbackRecovered?' Batch analysis failed, but single-message fallback recovered the event.':''}`;
 	try{await pushToLine(claimed.pushTarget,summary,env.LINE_CHANNEL_ACCESS_TOKEN);}catch(error){console.error('LINE BATCH STATUS PUSH FAILED:',error);}
 	} catch(error) {
 		await failBatch(env.DB,claimed.id,error);

@@ -5,6 +5,7 @@ export const APP_NAME = 'Bangkok Wine Scout';
 export const VERSION = '0.7.0';
 const DEFAULT_LINE_TEXT_CONTEXT_WINDOW_SECONDS = 600;
 const DEFAULT_LINE_IMAGE_BATCH_WINDOW_SECONDS = 15;
+const DEFAULT_LINE_MESSAGE_BATCH_WINDOW_SECONDS = 60;
 
 function parseNumber(value: string, name: string): number {
 	const parsed = Number(value);
@@ -78,5 +79,13 @@ export function getLineImageBatchWindowSeconds(env: WorkerEnv): number {
 	if(!value) return DEFAULT_LINE_IMAGE_BATCH_WINDOW_SECONDS;
 	const seconds=Number(value);
 	if(!Number.isInteger(seconds)||seconds<=0||seconds>86400) throw new Error('LINE_IMAGE_BATCH_WINDOW_SECONDS must be an integer from 1 to 86400.');
+	return seconds;
+}
+
+export function getLineMessageBatchWindowSeconds(env: WorkerEnv): number {
+	const value = env.LINE_MESSAGE_BATCH_WINDOW_SECONDS?.trim() || env.LINE_IMAGE_BATCH_WINDOW_SECONDS?.trim();
+	if (!value) return DEFAULT_LINE_MESSAGE_BATCH_WINDOW_SECONDS;
+	const seconds = Number(value);
+	if (!Number.isInteger(seconds) || seconds <= 0 || seconds > 86400) throw new Error('LINE_MESSAGE_BATCH_WINDOW_SECONDS must be an integer from 1 to 86400.');
 	return seconds;
 }

@@ -1,5 +1,5 @@
 import {
-	APP_NAME, getOptionalLineTextContextWindowSeconds, getLineImageBatchWindowSeconds, VERSION,
+	APP_NAME, getLineMessageBatchWindowSeconds, VERSION,
 } from '../config';
 import { isKnownCommand, routeCommand } from '../commands/router';
 import { storeLineImageAsset } from '../services/event-intake';
@@ -11,7 +11,7 @@ import {
 	buildLineConversationKey,
 	storePendingLineText,
 } from '../services/line-text-context';
-import { registerBatchAsset } from '../services/line-image-batch-repository';
+import { closeCollectingBatch, registerBatchAsset, registerBatchText } from '../services/line-image-batch-repository';
 import type { BatchProcessingMessage } from '../services/line-image-batch-processing';
 import type { WorkerEnv } from '../types/env';
 import type {
@@ -57,7 +57,7 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 	const conversationKey=message.conversationKey??`line-message:${message.messageId}`;
 	const registered=await registerBatchAsset(env.DB,{assetId:asset.assetId,intakeId:asset.intakeId,lineMessageId:message.messageId,contentType:downloaded.contentType,r2ObjectKey:asset.objectKey,receivedAt:message.receivedAt,conversationKey,pushTarget:message.pushTarget});
 	if(registered.duplicate) return;
-	await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:registered.batch.id,expectedLastReceivedAt:registered.batch.lastReceivedAt} satisfies BatchProcessingMessage,{delaySeconds:getLineImageBatchWindowSeconds(env)});
+	await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:registered.batch.id,expectedLastReceivedAt:registered.batch.lastReceivedAt} satisfies BatchProcessingMessage,{delaySeconds:getLineMessageBatchWindowSeconds(env)});
 }
 
 async function acknowledgeAndQueueImage(event: LineImageMessageEvent, env: WorkerEnv): Promise<void> {
@@ -70,39 +70,40 @@ async function acknowledgeAndQueueImage(event: LineImageMessageEvent, env: Worke
 		receivedAt: new Date(event.timestamp ?? Date.now()).toISOString(),
 	} satisfies ImageProcessingMessage);
 
-	await replyToLine(event.replyToken, 'Image received – waiting briefly for related images.', env.LINE_CHANNEL_ACCESS_TOKEN);
-}
-
-function formatCorrelationWindow(seconds: number | null): string {
-	if (seconds === null) return 'soon';
-	if (seconds % 60 === 0) {
-		const minutes = seconds / 60;
-		return `within ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
-	}
-	return `within ${seconds} seconds`;
+	await replyToLine(event.replyToken, 'Image received – waiting for related messages.', env.LINE_CHANNEL_ACCESS_TOKEN);
 }
 
 export async function processWebhookEvents(body: LineWebhookPayload, env: WorkerEnv): Promise<void> {
 	for (const event of body.events ?? []) {
 		if (isImageMessageEvent(event)) await acknowledgeAndQueueImage(event, env);
 		else if (isTextMessageEvent(event)) {
+			const conversationKey = buildLineConversationKey(event.source);
+			if (event.message.text.trim().toLowerCase() === '/done') {
+				const closed = conversationKey ? await closeCollectingBatch(env.DB, conversationKey) : null;
+				if (closed?.processingAt) {
+					await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:closed.id,expectedLastReceivedAt:closed.lastReceivedAt,closedProcessingToken:closed.processingAt} satisfies BatchProcessingMessage);
+					await replyToLine(event.replyToken, 'Batch closed – processing now.', env.LINE_CHANNEL_ACCESS_TOKEN);
+				} else await replyToLine(event.replyToken, 'No active batch to close.', env.LINE_CHANNEL_ACCESS_TOKEN);
+				continue;
+			}
 			if (isKnownCommand(event.message.text)) {
 				await replyToLine(event.replyToken, routeCommand(event.message.text), env.LINE_CHANNEL_ACCESS_TOKEN);
 				continue;
 			}
 
-			const conversationKey = buildLineConversationKey(event.source);
 			if (event.message.text.trim() && conversationKey) {
+				const receivedAt=new Date(event.timestamp ?? Date.now()).toISOString();
 				await storePendingLineText(env.DB, {
 					messageId: event.message.id,
 					conversationKey,
 					text: event.message.text,
-					receivedAt: new Date(event.timestamp ?? Date.now()).toISOString(),
+					receivedAt,
 				});
-				const window = formatCorrelationWindow(getOptionalLineTextContextWindowSeconds(env));
+				const registered=await registerBatchText(env.DB,{messageId:event.message.id,text:event.message.text,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent)});
+				if(!registered.duplicate)await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:registered.batch.id,expectedLastReceivedAt:registered.batch.lastReceivedAt} satisfies BatchProcessingMessage,{delaySeconds:getLineMessageBatchWindowSeconds(env)});
 				await replyToLine(
 					event.replyToken,
-					`Event details received. Send the related flyer image ${window}.`,
+					'Event details received – waiting for related images or text.',
 					env.LINE_CHANNEL_ACCESS_TOKEN,
 				);
 				continue;

@@ -14,6 +14,7 @@
 		"AI_TIMEOUT_MS": "5000",
 		"LINE_TEXT_CONTEXT_WINDOW_SECONDS": "600",
 		"LINE_IMAGE_BATCH_WINDOW_SECONDS": "15",
+		"LINE_MESSAGE_BATCH_WINDOW_SECONDS": "60",
 		"PUBLIC_SITE_ORIGIN": "https://frontend.example.com"
 	},
 	"queues": {

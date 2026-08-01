@@ -24,6 +24,16 @@ export interface LineImageBatchAsset {
 	ordinal: number;
 }
 
+export interface LineMessageBatchText {
+	batchId: string;
+	messageId: string;
+	assetId: string;
+	text: string;
+	receivedAt: string;
+	conversationKey: string;
+	ordinal: number;
+}
+
 interface BatchRow {
 	id: string; conversation_key: string; status: LineImageBatchStatus; first_received_at: string;
 	last_received_at: string; processing_at: string | null; completed_at: string | null;
@@ -33,6 +43,7 @@ interface AssetRow {
 	batch_id: string; asset_id: string; intake_id: string; line_message_id: string;
 	content_type: string; r2_object_key: string; received_at: string; conversation_key: string; ordinal: number;
 }
+interface TextRow { batch_id:string; message_id:string; asset_id:string; text_content:string; received_at:string; conversation_key:string; ordinal:number }
 
 function mapBatch(row: BatchRow): LineImageBatch {
 	let ids: string[] = [];
@@ -79,6 +90,24 @@ export async function registerBatchAsset(db: D1Database, input: Omit<LineImageBa
 	throw new Error('Could not register LINE image in a collecting batch.');
 }
 
+export async function registerBatchText(db:D1Database,input:Omit<LineMessageBatchText,'batchId'|'assetId'|'ordinal'> & {pushTarget?:string}):Promise<{batch:LineImageBatch;duplicate:boolean}>{
+	const duplicate=await db.prepare(`SELECT b.* FROM line_message_batch_texts t JOIN line_image_batches b ON b.id=t.batch_id WHERE t.message_id=?`).bind(input.messageId).first<BatchRow>();
+	if(duplicate)return{batch:mapBatch(duplicate),duplicate:true};
+	for(let attempt=0;attempt<3;attempt++){
+		let batch=await db.prepare(`SELECT * FROM line_image_batches WHERE conversation_key=? AND status='collecting' LIMIT 1`).bind(input.conversationKey).first<BatchRow>();
+		if(!batch){const id=crypto.randomUUID();await db.prepare(`INSERT OR IGNORE INTO line_image_batches (id,conversation_key,status,first_received_at,last_received_at,push_target) VALUES (?,?,'collecting',?,?,?)`).bind(id,input.conversationKey,input.receivedAt,input.receivedAt,input.pushTarget??null).run();batch=await db.prepare(`SELECT * FROM line_image_batches WHERE conversation_key=? AND status='collecting' LIMIT 1`).bind(input.conversationKey).first<BatchRow>();}
+		if(!batch)continue;
+		const ordinal=await db.prepare(`SELECT (SELECT COUNT(*) FROM line_image_batch_assets WHERE batch_id=?1)+(SELECT COUNT(*) FROM line_message_batch_texts WHERE batch_id=?1)+1 AS ordinal`).bind(batch.id).first<{ordinal:number}>();
+		const results=await db.batch([
+			db.prepare(`UPDATE line_image_batches SET last_received_at=CASE WHEN last_received_at<? THEN ? ELSE last_received_at END,push_target=COALESCE(push_target,?) WHERE id=? AND status='collecting'`).bind(input.receivedAt,input.receivedAt,input.pushTarget??null,batch.id),
+			db.prepare(`INSERT OR IGNORE INTO line_message_batch_texts (batch_id,message_id,asset_id,text_content,received_at,conversation_key,ordinal) SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM line_image_batches WHERE id=? AND status='collecting')`).bind(batch.id,input.messageId,`line-text-${input.messageId}`,input.text,input.receivedAt,input.conversationKey,ordinal?.ordinal??1,batch.id),
+		]);
+		if((results[1].meta.changes??0)>0){const updated=await getBatch(db,batch.id);if(!updated)throw new Error('Registered LINE message batch disappeared.');return{batch:updated,duplicate:false};}
+		const existing=await db.prepare(`SELECT b.* FROM line_message_batch_texts t JOIN line_image_batches b ON b.id=t.batch_id WHERE t.message_id=?`).bind(input.messageId).first<BatchRow>();if(existing)return{batch:mapBatch(existing),duplicate:true};
+	}
+	throw new Error('Could not register LINE text in a collecting batch.');
+}
+
 export async function getBatch(db: D1Database, id: string): Promise<LineImageBatch | null> {
 	const row = await db.prepare('SELECT * FROM line_image_batches WHERE id=?').bind(id).first<BatchRow>();
 	return row ? mapBatch(row) : null;
@@ -88,6 +117,12 @@ export async function listBatchAssets(db: D1Database, batchId: string): Promise<
 	const rows = await db.prepare('SELECT * FROM line_image_batch_assets WHERE batch_id=? ORDER BY ordinal,received_at,asset_id').bind(batchId).all<AssetRow>();
 	return (rows.results ?? []).map((r) => ({ batchId:r.batch_id,assetId:r.asset_id,intakeId:r.intake_id,lineMessageId:r.line_message_id,contentType:r.content_type,r2ObjectKey:r.r2_object_key,receivedAt:r.received_at,conversationKey:r.conversation_key,ordinal:r.ordinal }));
 }
+
+export async function listBatchTexts(db:D1Database,batchId:string):Promise<LineMessageBatchText[]>{const rows=await db.prepare('SELECT * FROM line_message_batch_texts WHERE batch_id=? ORDER BY ordinal,received_at,message_id').bind(batchId).all<TextRow>();return(rows.results??[]).map((row)=>({batchId:row.batch_id,messageId:row.message_id,assetId:row.asset_id,text:row.text_content,receivedAt:row.received_at,conversationKey:row.conversation_key,ordinal:row.ordinal}));}
+
+export async function closeCollectingBatch(db:D1Database,conversationKey:string):Promise<LineImageBatch|null>{const token=`done:${crypto.randomUUID()}`;const result=await db.prepare(`UPDATE line_image_batches SET status='processing',processing_at=?,attempt_count=attempt_count+1 WHERE id=(SELECT id FROM line_image_batches WHERE conversation_key=? AND status='collecting' LIMIT 1) AND status='collecting' RETURNING *`).bind(token,conversationKey).first<BatchRow>();return result?mapBatch(result):null;}
+
+export async function claimClosedBatch(db:D1Database,batchId:string,token:string):Promise<LineImageBatch|null>{const result=await db.prepare(`UPDATE line_image_batches SET processing_at=? WHERE id=? AND status='processing' AND processing_at=?`).bind(new Date().toISOString(),batchId,token).run();return(result.meta.changes??0)===1?getBatch(db,batchId):null;}
 
 export async function claimReadyBatch(db: D1Database, batchId: string, expectedLastReceivedAt: string, readyBefore: string): Promise<LineImageBatch | null> {
 	const now = new Date().toISOString();

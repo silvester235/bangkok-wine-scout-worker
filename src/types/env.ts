@@ -11,5 +11,6 @@ export interface WorkerEnv {
 	AI_TIMEOUT_MS: string;
 	LINE_TEXT_CONTEXT_WINDOW_SECONDS: string;
 	LINE_IMAGE_BATCH_WINDOW_SECONDS: string;
+	LINE_MESSAGE_BATCH_WINDOW_SECONDS?: string;
 	PUBLIC_SITE_ORIGIN?: string;
 }

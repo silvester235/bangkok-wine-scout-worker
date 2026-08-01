@@ -32,10 +32,14 @@ beforeAll(async () => {
 			linked_event_id TEXT
 		)`,
 	).run();
+	await env.DB.exec(`CREATE TABLE IF NOT EXISTS line_image_batches (id TEXT PRIMARY KEY,conversation_key TEXT NOT NULL,status TEXT NOT NULL,first_received_at TEXT NOT NULL,last_received_at TEXT NOT NULL,processing_at TEXT,completed_at TEXT,push_target TEXT,resulting_event_ids_json TEXT NOT NULL DEFAULT '[]',error TEXT,attempt_count INTEGER NOT NULL DEFAULT 0,notification_sent_at TEXT);CREATE UNIQUE INDEX IF NOT EXISTS webhook_collecting_conversation ON line_image_batches(conversation_key) WHERE status='collecting';CREATE TABLE IF NOT EXISTS line_message_batch_texts(batch_id TEXT NOT NULL,message_id TEXT NOT NULL UNIQUE,asset_id TEXT NOT NULL UNIQUE,text_content TEXT NOT NULL,received_at TEXT NOT NULL,conversation_key TEXT NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(batch_id,message_id));CREATE TABLE IF NOT EXISTS line_image_batch_assets(batch_id TEXT NOT NULL,asset_id TEXT NOT NULL UNIQUE,intake_id TEXT NOT NULL,line_message_id TEXT NOT NULL UNIQUE,source_type TEXT NOT NULL DEFAULT 'line_image',source_reference TEXT NOT NULL,content_type TEXT NOT NULL,r2_object_key TEXT NOT NULL,received_at TEXT NOT NULL,conversation_key TEXT NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(batch_id,asset_id));`);
 });
 
 beforeEach(async () => {
 	await env.DB.prepare('DELETE FROM line_text_contexts').run();
+	await env.DB.prepare('DELETE FROM line_message_batch_texts').run();
+	await env.DB.prepare('DELETE FROM line_image_batch_assets').run();
+	await env.DB.prepare('DELETE FROM line_image_batches').run();
 	replyToLine.mockClear();
 });
 
@@ -59,7 +63,7 @@ describe('LINE text webhook acknowledgement', () => {
 		expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM line_text_contexts').first<{ count: number }>()).toEqual({ count: 0 });
 	});
 
-	it('stores event text and acknowledges the default correlation window', async () => {
+	it('stores event text in the active message batch and acknowledges collection', async () => {
 		await processWebhookEvents(textWebhook('text-1', 'Wine dinner at 7pm'), env as WorkerEnv);
 		const stored = await env.DB.prepare(
 			'SELECT message_id, text_content FROM line_text_contexts WHERE message_id = ?',
@@ -68,10 +72,12 @@ describe('LINE text webhook acknowledgement', () => {
 		expect(stored).toEqual({ message_id: 'text-1', text_content: 'Wine dinner at 7pm' });
 		expect(replyToLine).toHaveBeenCalledWith(
 			'reply-text-1',
-			'Event details received. Send the related flyer image within 10 minutes.',
+			'Event details received – waiting for related images or text.',
 			undefined,
 		);
 	});
+
+	it('closes an active batch with /done and handles repeated completion safely',async()=>{await processWebhookEvents(textWebhook('text-1','Wine dinner 5 August 2026 at 19:00'),env as WorkerEnv);await processWebhookEvents(textWebhook('done-1','/done'),env as WorkerEnv);expect(replyToLine).toHaveBeenCalledWith('reply-done-1','Batch closed – processing now.',undefined);await processWebhookEvents(textWebhook('done-2','/done'),env as WorkerEnv);expect(replyToLine).toHaveBeenCalledWith('reply-done-2','No active batch to close.',undefined);});
 
 	it('does not send the unknown-command response for stored event text', async () => {
 		await processWebhookEvents(textWebhook('text-1', 'Wine dinner at 7pm'), env as WorkerEnv);
