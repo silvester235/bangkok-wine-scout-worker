@@ -2,7 +2,7 @@ import { extractImageMetadata, type ExifMetadata, type ImageDimensions } from '.
 
 export interface ImageIntakeRequest {
 	intakeId?: string;
-	sourceType: 'line_image';
+	sourceType: 'line_image' | 'web_image';
 	sourceReference: string;
 	lineUserId?: string;
 	receivedAt: string;
@@ -24,7 +24,7 @@ interface IntakeAssetMetadata {
 	schemaVersion: 2;
 	id: string;
 	intakeId: string;
-	sourceType: 'line_image';
+	sourceType: 'line_image' | 'web_image';
 	sourceReference: string;
 	lineUserId?: string;
 	role: 'invitation' | 'menu' | 'wine_list' | 'other';

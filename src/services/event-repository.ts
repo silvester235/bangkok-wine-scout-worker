@@ -9,7 +9,7 @@ import { mergeEventData, type CanonicalEventData } from './event-merger';
 import { createUniqueEventSlug } from './event-slug';
 
 export type EventAssetRole = 'main' | 'flyer' | 'menu' | 'reminder' | 'social' | 'map' | 'other';
-export type EventSourceType = 'line_image' | 'line_text' | 'other';
+export type EventSourceType = 'line_image' | 'web_image' | 'line_text' | 'web_page' | 'other';
 
 export interface EventSourceAssetInput {
 	intakeId: string;

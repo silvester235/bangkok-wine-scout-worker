@@ -4,8 +4,9 @@ import type { WorkerEnv } from '../types/env';
 import type { LineWebhookPayload } from '../types/line';
 import { processWebhookEvents } from './webhook';
 
-const { replyToLine } = vi.hoisted(() => ({
+const { replyToLine, fetchPage } = vi.hoisted(() => ({
 	replyToLine: vi.fn().mockResolvedValue(undefined),
+	fetchPage: vi.fn().mockImplementation(async(url:string)=>({requestedUrl:url,normalizedUrl:url,finalUrl:url,status:'completed',httpStatus:200,contentType:'text/html',responseBytes:100,redirectCount:0,title:'Event',description:null,canonicalUrl:null,mainImageUrl:null,jsonLd:[],extractedText:'Wine dinner 5 August 2026 at 19:00',errorCode:null,errorMessage:null,fetchedAt:'2026-08-15T10:00:00.000Z'})),
 }));
 const queueSend=vi.fn().mockResolvedValue(undefined);
 
@@ -14,6 +15,7 @@ vi.mock('../services/line', () => ({
 	pushToLine: vi.fn(),
 	replyToLine,
 }));
+vi.mock('../services/web-page-ingestion-service',async(importOriginal)=>({...await importOriginal<typeof import('../services/web-page-ingestion-service')>(),fetchAndExtractWebPage:fetchPage}));
 
 declare module 'cloudflare:test' {
 	interface ProvidedEnv {
@@ -33,16 +35,18 @@ beforeAll(async () => {
 			linked_event_id TEXT
 		)`,
 	).run();
-	await env.DB.exec(`CREATE TABLE IF NOT EXISTS line_image_batches (id TEXT PRIMARY KEY,conversation_key TEXT NOT NULL,status TEXT NOT NULL,first_received_at TEXT NOT NULL,last_received_at TEXT NOT NULL,created_at TEXT NOT NULL,last_activity_at TEXT NOT NULL,expires_at TEXT NOT NULL,closed_at TEXT,updated_at TEXT NOT NULL,processing_at TEXT,completed_at TEXT,push_target TEXT,resulting_event_ids_json TEXT NOT NULL DEFAULT '[]',error TEXT,attempt_count INTEGER NOT NULL DEFAULT 0,notification_sent_at TEXT);CREATE UNIQUE INDEX IF NOT EXISTS webhook_collecting_conversation ON line_image_batches(conversation_key) WHERE status='collecting';CREATE TABLE IF NOT EXISTS line_message_batch_texts(batch_id TEXT NOT NULL,message_id TEXT NOT NULL UNIQUE,webhook_event_id TEXT UNIQUE,asset_id TEXT NOT NULL UNIQUE,text_content TEXT NOT NULL,received_at TEXT NOT NULL,conversation_key TEXT NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(batch_id,message_id));CREATE TABLE IF NOT EXISTS line_image_batch_assets(batch_id TEXT NOT NULL,asset_id TEXT NOT NULL UNIQUE,intake_id TEXT NOT NULL,line_message_id TEXT NOT NULL UNIQUE,webhook_event_id TEXT UNIQUE,source_type TEXT NOT NULL DEFAULT 'line_image',source_reference TEXT NOT NULL,content_type TEXT NOT NULL,r2_object_key TEXT NOT NULL,received_at TEXT NOT NULL,conversation_key TEXT NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(batch_id,asset_id));`);
+	await env.DB.exec(`CREATE TABLE IF NOT EXISTS line_image_batches (id TEXT PRIMARY KEY,conversation_key TEXT NOT NULL,status TEXT NOT NULL,first_received_at TEXT NOT NULL,last_received_at TEXT NOT NULL,created_at TEXT NOT NULL,last_activity_at TEXT NOT NULL,expires_at TEXT NOT NULL,closed_at TEXT,updated_at TEXT NOT NULL,processing_at TEXT,completed_at TEXT,push_target TEXT,resulting_event_ids_json TEXT NOT NULL DEFAULT '[]',error TEXT,attempt_count INTEGER NOT NULL DEFAULT 0,notification_sent_at TEXT);CREATE UNIQUE INDEX IF NOT EXISTS webhook_collecting_conversation ON line_image_batches(conversation_key) WHERE status='collecting';CREATE TABLE IF NOT EXISTS line_message_batch_texts(batch_id TEXT NOT NULL,message_id TEXT NOT NULL UNIQUE,webhook_event_id TEXT UNIQUE,asset_id TEXT NOT NULL UNIQUE,text_content TEXT NOT NULL,received_at TEXT NOT NULL,conversation_key TEXT NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(batch_id,message_id));CREATE TABLE IF NOT EXISTS line_image_batch_assets(batch_id TEXT NOT NULL,asset_id TEXT NOT NULL UNIQUE,intake_id TEXT NOT NULL,line_message_id TEXT NOT NULL UNIQUE,webhook_event_id TEXT UNIQUE,source_type TEXT NOT NULL DEFAULT 'line_image',source_reference TEXT NOT NULL,content_type TEXT NOT NULL,r2_object_key TEXT NOT NULL,received_at TEXT NOT NULL,conversation_key TEXT NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(batch_id,asset_id));CREATE TABLE IF NOT EXISTS line_message_batch_web_sources(batch_id TEXT NOT NULL,message_id TEXT NOT NULL,webhook_event_id TEXT NOT NULL UNIQUE,asset_id TEXT NOT NULL UNIQUE,requested_url TEXT NOT NULL,normalized_url TEXT NOT NULL,final_url TEXT,status TEXT NOT NULL,http_status INTEGER,content_type TEXT,response_bytes INTEGER,redirect_count INTEGER NOT NULL,title TEXT,description TEXT,canonical_url TEXT,main_image_url TEXT,json_ld_json TEXT NOT NULL,extracted_text TEXT,error_code TEXT,error_message TEXT,fetched_at TEXT NOT NULL,received_at TEXT NOT NULL,conversation_key TEXT NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(batch_id,message_id),UNIQUE(batch_id,normalized_url));`);
 });
 
 beforeEach(async () => {
 	await env.DB.prepare('DELETE FROM line_text_contexts').run();
 	await env.DB.prepare('DELETE FROM line_message_batch_texts').run();
+	await env.DB.prepare('DELETE FROM line_message_batch_web_sources').run();
 	await env.DB.prepare('DELETE FROM line_image_batch_assets').run();
 	await env.DB.prepare('DELETE FROM line_image_batches').run();
 	replyToLine.mockClear();
 	queueSend.mockClear();
+	fetchPage.mockClear();
 });
 
 const testEnv=(windowSeconds='60')=>({...env,IMAGE_PROCESSING_QUEUE:{send:queueSend},LINE_MESSAGE_BATCH_WINDOW_SECONDS:windowSeconds}) as unknown as WorkerEnv;

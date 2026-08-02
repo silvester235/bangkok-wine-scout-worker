@@ -11,7 +11,8 @@ import {
 	buildLineConversationKey,
 	storePendingLineText,
 } from '../services/line-text-context';
-import { claimBatchForDone, expireActiveBatchForIncoming, registerBatchAsset, registerBatchText, releaseDoneClaim } from '../services/line-image-batch-repository';
+import { claimBatchForDone, expireActiveBatchForIncoming, registerBatchAsset, registerBatchText, registerBatchWebSource, releaseDoneClaim } from '../services/line-image-batch-repository';
+import { detectPrimaryWebUrl, fetchAndExtractWebPage, fetchWebPageImage } from '../services/web-page-ingestion-service';
 import type { BatchProcessingMessage } from '../services/line-image-batch-processing';
 import type { WorkerEnv } from '../types/env';
 import type {
@@ -121,6 +122,28 @@ export async function processWebhookEvents(body: LineWebhookPayload, env: Worker
 				const receivedAt=new Date(event.timestamp ?? Date.now()).toISOString();
 				const expired=await expireActiveBatchForIncoming(env.DB,conversationKey,receivedAt);
 				if(expired)await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:expired.id,expectedLastReceivedAt:expired.lastReceivedAt,closedProcessingToken:expired.processingAt!} satisfies BatchProcessingMessage);
+				const detectedUrl=detectPrimaryWebUrl(event.message.text);
+				if(detectedUrl){
+					const ingestion=await fetchAndExtractWebPage(detectedUrl.url,{timeoutMs:8_000,maxRedirects:5,maxHtmlBytes:1_500_000,maxExtractedTextChars:40_000,userAgent:'BangkokWineScoutBot/1.0 (+https://bangkokwinescout.com)'});
+					const batchWindowSeconds=getLineMessageBatchWindowSeconds(env);
+					const registered=await registerBatchWebSource(env.DB,{messageId:event.message.id,webhookEventId:event.webhookEventId,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent),...ingestion},batchWindowSeconds);
+					await env.EVENT_INTAKES.put(`line-batches/${registered.batch.id}/web-sources/${encodeURIComponent(detectedUrl.normalizedUrl)}.json`,JSON.stringify(ingestion,null,2),{httpMetadata:{contentType:'application/json'}});
+					if(!registered.duplicate&&ingestion.status==='completed'&&ingestion.mainImageUrl){
+						const image=await fetchWebPageImage(ingestion.mainImageUrl,{timeoutMs:6_000,maxRedirects:3,maxBytes:8_000_000,userAgent:'BangkokWineScoutBot/1.0 (+https://bangkokwinescout.com)'});
+						if(image){const reference=`${event.message.id}:web-main`;const asset=await storeLineImageAsset(env.EVENT_INTAKES,{sourceType:'web_image',sourceReference:reference,lineUserId:event.source?.userId,receivedAt,contentType:image.contentType,content:image.content});await registerBatchAsset(env.DB,{assetId:asset.assetId,intakeId:asset.intakeId,lineMessageId:reference,webhookEventId:`${event.webhookEventId??event.message.id}:web-main`,sourceType:'web_image',contentType:image.contentType,r2ObjectKey:asset.objectKey,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent)},batchWindowSeconds);}
+					}
+					let contextRegistered=false;
+					let scheduledBatch=registered.batch;
+					if(detectedUrl.contextText){
+						await storePendingLineText(env.DB,{messageId:`${event.message.id}:context`,conversationKey,text:detectedUrl.contextText,receivedAt});
+						const textRegistration=await registerBatchText(env.DB,{messageId:`${event.message.id}:context`,webhookEventId:`${event.webhookEventId??event.message.id}:context`,text:detectedUrl.contextText,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent)},batchWindowSeconds);
+						contextRegistered=!textRegistration.duplicate;scheduledBatch=textRegistration.batch;
+					}
+					console.log({event:'line_web_source_ingestion',batchId:registered.batch.id,normalizedUrl:ingestion.normalizedUrl,status:ingestion.status,httpStatus:ingestion.httpStatus,errorCode:ingestion.errorCode,duplicate:registered.duplicate});
+					if(!registered.duplicate||contextRegistered)await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:scheduledBatch.id,expectedLastReceivedAt:scheduledBatch.lastReceivedAt},{delaySeconds:batchWindowSeconds});
+					await replyToLine(event.replyToken,ingestion.status==='completed'?'Event page received – waiting for related images or text.':`I couldn't read that event page (${ingestion.errorMessage??'unsupported page'}). You can send the event details as text or an image instead.`,env.LINE_CHANNEL_ACCESS_TOKEN);
+					continue;
+				}
 				await storePendingLineText(env.DB, {
 					messageId: event.message.id,
 					conversationKey,

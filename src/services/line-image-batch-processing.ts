@@ -7,7 +7,7 @@ import { normalizeUtf8Text, normalizeWineEvent } from './event-normalizer';
 import { saveWineEvent, type EventSourceAssetInput } from './event-repository';
 import { validatePublishableEvent } from './event-publication-guard';
 import { markLineTextContextLinked } from './line-text-context';
-import { claimClosedBatch, claimReadyBatch, completeBatch, failBatch, getBatch, listBatchAssets, listBatchTexts, markBatchNotificationSent, retryFailedBatch } from './line-image-batch-repository';
+import { claimClosedBatch, claimReadyBatch, completeBatch, failBatch, getBatch, listBatchAssets, listBatchTexts, listBatchWebSources, markBatchNotificationSent, retryFailedBatch } from './line-image-batch-repository';
 import { pushToLine } from './line';
 import { extractAndStoreOcr } from './ocr';
 
@@ -31,9 +31,11 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 
 	const assets=await listBatchAssets(env.DB,claimed.id);
 	const texts=await listBatchTexts(env.DB,claimed.id);
-	console.log({event:'line_batch_processing_snapshot',batchId:claimed.id,action:'process',assetCount:assets.length,textMessageCount:texts.length,expiresAt:claimed.expiresAt});
+	const webSources=await listBatchWebSources(env.DB,claimed.id);
+	console.log({event:'line_batch_processing_snapshot',batchId:claimed.id,action:'process',assetCount:assets.length,textMessageCount:texts.length,webSourceCount:webSources.length,expiresAt:claimed.expiresAt});
 	const contexts:BatchAssetContext[]=[];
 	const imageContexts:BatchAssetContext[]=[];
+	const attributableContexts:BatchAssetContext[]=[];
 	const sourceAssets=new Map<string,EventSourceAssetInput>();
 	const combinedText=texts.map((text,index)=>`LINE TEXT ${index+1}\nmessageId: ${text.messageId}\nreceivedAt: ${text.receivedAt}\n${text.text}`).join('\n\n---\n\n');
 	for(const [assetIndex,asset] of assets.entries()) {
@@ -52,11 +54,18 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 			model: ocr.model,
 		});
 		const context={assetId:asset.assetId,intakeId:asset.intakeId,ordinal:asset.ordinal,receivedAt:asset.receivedAt,contentType:asset.contentType,ocrText:ocr.status==='completed'?ocr.text:'',lineText:assetIndex===0?combinedText:null};
-		contexts.push(context);imageContexts.push(context);
-		sourceAssets.set(asset.assetId,{intakeId:asset.intakeId,assetId:asset.assetId,sourceType:'line_image',sourceMessageId:asset.lineMessageId,isPublic:true,r2ObjectKey:asset.r2ObjectKey,contentType:asset.contentType});
+		contexts.push(context);imageContexts.push(context);attributableContexts.push(context);
+		sourceAssets.set(asset.assetId,{intakeId:asset.intakeId,assetId:asset.assetId,sourceType:asset.sourceType??'line_image',sourceMessageId:asset.lineMessageId,isPublic:true,r2ObjectKey:asset.r2ObjectKey,contentType:asset.contentType});
 	}
 	for(const text of texts)sourceAssets.set(text.assetId,{intakeId:`line-text-${text.messageId}`,assetId:text.assetId,sourceType:'line_text',sourceMessageId:text.messageId,textContent:text.text,isPublic:false});
-	if(assets.length===0&&texts.length>0){const first=texts[0];contexts.push({assetId:first.assetId,intakeId:`line-text-${first.messageId}`,ordinal:first.ordinal,receivedAt:first.receivedAt,contentType:'text/plain',ocrText:'',lineText:combinedText});}
+	for(const web of webSources){
+		const structured=web.jsonLd.length?`\nJSON-LD:\n${JSON.stringify(web.jsonLd)}`:'';
+		const webText=[`URL: ${web.finalUrl??web.normalizedUrl}`,web.title&&`TITLE: ${web.title}`,web.description&&`DESCRIPTION: ${web.description}`,web.extractedText,structured].filter(Boolean).join('\n');
+		if(web.status==='completed'&&webText){const context={assetId:web.assetId,intakeId:`line-web-${web.messageId}`,ordinal:web.ordinal,receivedAt:web.receivedAt,contentType:'text/html',ocrText:webText,lineText:null};contexts.push(context);attributableContexts.push(context);}
+		sourceAssets.set(web.assetId,{intakeId:`line-web-${web.messageId}`,assetId:web.assetId,sourceType:'web_page',sourceMessageId:web.messageId,textContent:webText,isPublic:false,contentType:'text/html'});
+	}
+	if(assets.length===0&&webSources.filter((source)=>source.status==='completed').length===0&&texts.length>0){const first=texts[0];contexts.push({assetId:first.assetId,intakeId:`line-text-${first.messageId}`,ordinal:first.ordinal,receivedAt:first.receivedAt,contentType:'text/plain',ocrText:'',lineText:combinedText});}
+	else if(combinedText&&contexts.length>0)contexts[0].lineText=[contexts[0].lineText,combinedText].filter(Boolean).join('\n\n');
 
 	let analysis=await extractBatchEvents(env.AI,env.EVENT_INTAKES,claimed.id,contexts);
 	const fallbackInvoked=analysis.diagnostics.fallbackRequired;
@@ -69,7 +78,7 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 	}
 	const multipleCandidates=analysis.events.length>1;
 	if(multipleCandidates){console.warn({event:'line_message_batch_multiple_events_rejected',batchId:claimed.id,candidateCount:analysis.events.length,reason:'one LINE message batch may publish at most one event'});analysis={...analysis,events:[],unassignedAssets:assets.map((asset)=>asset.assetId),ambiguous:true};}
-	const attribution=attributeContributingAssets(analysis.events,imageContexts);
+	const attribution=attributeContributingAssets(analysis.events,attributableContexts);
 	analysis={...analysis,events:attribution.events,unassignedAssets:attribution.unassignedAssets,ambiguous:attribution.unassignedAssets.length===0&&attribution.events.length>0?false:analysis.ambiguous};
 	for(const contribution of attribution.contributions) console.log({event:'line_batch_deterministic_asset_attribution',batchId:claimed.id,...contribution});
 	console.log({event:'line_batch_deterministic_asset_attribution_summary',batchId:claimed.id,assetAssignments:analysis.events.map((event,candidateIndex)=>({candidateIndex,assignments:event.assetAssignments})),unassignedAssets:analysis.unassignedAssets});
@@ -166,7 +175,7 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 	});
 	if(!await completeBatch(env.DB,claimed.id,status,eventIds)) return;
 	if(!claimed.pushTarget||!await markBatchNotificationSent(env.DB,claimed.id)) return;
-	const countSummary=[assets.length?`${assets.length} image${assets.length===1?'':'s'}`:'',texts.length?`${texts.length} text message${texts.length===1?'':'s'}`:''].filter(Boolean).join(' and ');
+	const countSummary=[assets.length?`${assets.length} image${assets.length===1?'':'s'}`:'',webSources.length?`${webSources.length} web page${webSources.length===1?'':'s'}`:'',texts.length?`${texts.length} text message${texts.length===1?'':'s'}`:''].filter(Boolean).join(', ').replace(/, ([^,]+)$/,' and $1');
 	const summary=eventIds.length===0
 		? analysis.events.length===0
 			? `Processed ${countSummary}, but no event candidate could be extracted${fallbackInvoked?' after batch analysis and single-message fallback':''}.`
