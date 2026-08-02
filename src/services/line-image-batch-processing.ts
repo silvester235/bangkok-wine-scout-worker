@@ -10,6 +10,7 @@ import { markLineTextContextLinked } from './line-text-context';
 import { claimClosedBatch, claimReadyBatch, completeBatch, failBatch, getBatch, listBatchAssets, listBatchTexts, listBatchWebSources, markBatchNotificationSent, retryFailedBatch } from './line-image-batch-repository';
 import { pushToLine } from './line';
 import { extractAndStoreOcr } from './ocr';
+import { parseEventDateFromText } from './date-parser';
 
 export interface BatchProcessingMessage { type:'process_batch'; batchId:string; expectedLastReceivedAt:string; closedProcessingToken?:string }
 
@@ -37,6 +38,7 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 	const imageContexts:BatchAssetContext[]=[];
 	const attributableContexts:BatchAssetContext[]=[];
 	const sourceAssets=new Map<string,EventSourceAssetInput>();
+	const webPageDates=new Set<string>();
 	const combinedText=texts.map((text,index)=>`LINE TEXT ${index+1}\nmessageId: ${text.messageId}\nreceivedAt: ${text.receivedAt}\n${text.text}`).join('\n\n---\n\n');
 	for(const [assetIndex,asset] of assets.entries()) {
 		const object=await env.EVENT_INTAKES.get(asset.r2ObjectKey);
@@ -59,8 +61,10 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 	}
 	for(const text of texts)sourceAssets.set(text.assetId,{intakeId:`line-text-${text.messageId}`,assetId:text.assetId,sourceType:'line_text',sourceMessageId:text.messageId,textContent:text.text,isPublic:false});
 	for(const web of webSources){
+		const deterministicDate=parseEventDateFromText([web.description,web.extractedText].filter(Boolean).join('\n'),new Date(web.fetchedAt));
+		if(deterministicDate)webPageDates.add(deterministicDate);
 		const structured=web.jsonLd.length?`\nJSON-LD:\n${JSON.stringify(web.jsonLd)}`:'';
-		const webText=[`URL: ${web.finalUrl??web.normalizedUrl}`,web.title&&`TITLE: ${web.title}`,web.description&&`DESCRIPTION: ${web.description}`,web.extractedText,structured].filter(Boolean).join('\n');
+		const webText=[`URL: ${web.finalUrl??web.normalizedUrl}`,web.title&&`TITLE: ${web.title}`,web.description&&`DESCRIPTION: ${web.description}`,deterministicDate&&`DETERMINISTIC EVENT DATE HINT: ${deterministicDate}`,web.extractedText,structured].filter(Boolean).join('\n');
 		if(web.status==='completed'&&webText){const context={assetId:web.assetId,intakeId:`line-web-${web.messageId}`,ordinal:web.ordinal,receivedAt:web.receivedAt,contentType:'text/html',ocrText:webText,lineText:null};contexts.push(context);attributableContexts.push(context);}
 		sourceAssets.set(web.assetId,{intakeId:`line-web-${web.messageId}`,assetId:web.assetId,sourceType:'web_page',sourceMessageId:web.messageId,textContent:webText,isPublic:false,contentType:'text/html'});
 	}
@@ -76,6 +80,11 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 		fallbackRecovered=fallback.events.length>0;
 		analysis={...analysis,events:fallback.events,unassignedAssets:fallback.unassignedAssets,ambiguous:fallback.ambiguous};
 	}
+	if(webPageDates.size===1){
+		const [webPageDate]=webPageDates;
+		analysis={...analysis,events:analysis.events.map((candidate)=>candidate.date?candidate:{...candidate,date:webPageDate})};
+		console.log({event:'line_batch_web_date_resolution',batchId:claimed.id,detectedDate:webPageDate,candidateDateBackfilled:analysis.events.some((candidate)=>candidate.date===webPageDate),source:'server_rendered_description_or_readable_text'});
+	}else if(webPageDates.size>1)console.warn({event:'line_batch_web_date_resolution',batchId:claimed.id,detectedDates:[...webPageDates],candidateDateBackfilled:false,reason:'conflicting webpage dates'});
 	const multipleCandidates=analysis.events.length>1;
 	if(multipleCandidates){console.warn({event:'line_message_batch_multiple_events_rejected',batchId:claimed.id,candidateCount:analysis.events.length,reason:'one LINE message batch may publish at most one event'});analysis={...analysis,events:[],unassignedAssets:assets.map((asset)=>asset.assetId),ambiguous:true};}
 	const attribution=attributeContributingAssets(analysis.events,attributableContexts);

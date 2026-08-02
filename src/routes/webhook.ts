@@ -125,6 +125,16 @@ export async function processWebhookEvents(body: LineWebhookPayload, env: Worker
 				const detectedUrl=detectPrimaryWebUrl(event.message.text);
 				if(detectedUrl){
 					const ingestion=await fetchAndExtractWebPage(detectedUrl.url,{timeoutMs:8_000,maxRedirects:5,maxHtmlBytes:1_500_000,maxExtractedTextChars:40_000,userAgent:'BangkokWineScoutBot/1.0 (+https://bangkokwinescout.com)'});
+					console.log({
+						event:'line_web_source_extracted',
+						requestedUrl:ingestion.requestedUrl,
+						finalUrl:ingestion.finalUrl,
+						status:ingestion.status,
+						title:ingestion.title,
+						description:ingestion.description,
+						jsonLd:ingestion.jsonLd,
+						extractedText:ingestion.extractedText,
+					});
 					const batchWindowSeconds=getLineMessageBatchWindowSeconds(env);
 					const registered=await registerBatchWebSource(env.DB,{messageId:event.message.id,webhookEventId:event.webhookEventId,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent),...ingestion},batchWindowSeconds);
 					await env.EVENT_INTAKES.put(`line-batches/${registered.batch.id}/web-sources/${encodeURIComponent(detectedUrl.normalizedUrl)}.json`,JSON.stringify(ingestion,null,2),{httpMetadata:{contentType:'application/json'}});
