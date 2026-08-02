@@ -14,6 +14,6 @@ const message:ImageProcessingMessage={type:'register_image',messageId:'m1',conve
 beforeEach(()=>{vi.clearAllMocks();mocks.download.mockResolvedValue({contentType:'image/jpeg',content:new Uint8Array([1]).buffer});mocks.store.mockResolvedValue({intakeId:'i1',assetId:'a1',objectKey:'objects/a1',duplicate:false});mocks.register.mockResolvedValue({batch:{id:'b1',lastReceivedAt:message.receivedAt},duplicate:false});send.mockResolvedValue(undefined)});
 
 describe('LINE image registration',()=>{
-	it('stores and registers an image, then schedules one delayed batch check',async()=>{await processImageMessage(message,env);expect(mocks.register).toHaveBeenCalledWith(env.DB,expect.objectContaining({lineMessageId:'m1',assetId:'a1',conversationKey:'user:u1'}));expect(send).toHaveBeenCalledWith({type:'process_batch',batchId:'b1',expectedLastReceivedAt:message.receivedAt},{delaySeconds:60})});
+	it('stores and registers an image, then schedules one delayed batch check',async()=>{await processImageMessage(message,env);expect(mocks.register).toHaveBeenCalledWith(env.DB,expect.objectContaining({lineMessageId:'m1',assetId:'a1',conversationKey:'user:u1'}),60);expect(send).toHaveBeenCalledWith({type:'process_batch',batchId:'b1',expectedLastReceivedAt:message.receivedAt},{delaySeconds:60})});
 	it('does not reschedule a duplicate webhook delivery',async()=>{mocks.register.mockResolvedValue({batch:{id:'b1',lastReceivedAt:message.receivedAt},duplicate:true});await processImageMessage(message,env);expect(send).not.toHaveBeenCalled()});
 });

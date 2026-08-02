@@ -11,7 +11,7 @@ import {
 	buildLineConversationKey,
 	storePendingLineText,
 } from '../services/line-text-context';
-import { closeCollectingBatch, expireActiveBatchForIncoming, registerBatchAsset, registerBatchText } from '../services/line-image-batch-repository';
+import { claimBatchForDone, expireActiveBatchForIncoming, registerBatchAsset, registerBatchText, releaseDoneClaim } from '../services/line-image-batch-repository';
 import type { BatchProcessingMessage } from '../services/line-image-batch-processing';
 import type { WorkerEnv } from '../types/env';
 import type {
@@ -56,10 +56,11 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 	});
 
 	const conversationKey=message.conversationKey??`line-message:${message.messageId}`;
-	const registered=await registerBatchAsset(env.DB,{assetId:asset.assetId,intakeId:asset.intakeId,lineMessageId:message.messageId,webhookEventId:message.webhookEventId,contentType:downloaded.contentType,r2ObjectKey:asset.objectKey,receivedAt:message.receivedAt,conversationKey,pushTarget:message.pushTarget});
+	const batchWindowSeconds=getLineMessageBatchWindowSeconds(env);
+	const registered=await registerBatchAsset(env.DB,{assetId:asset.assetId,intakeId:asset.intakeId,lineMessageId:message.messageId,webhookEventId:message.webhookEventId,contentType:downloaded.contentType,r2ObjectKey:asset.objectKey,receivedAt:message.receivedAt,conversationKey,pushTarget:message.pushTarget},batchWindowSeconds);
 	if(registered.duplicate) return;
 	console.log({event:'line_batch_lifecycle',lineUserId:message.lineUserId,webhookEventId:message.webhookEventId??message.messageId,batchId:registered.batch.id,expiresAt:registered.batch.expiresAt,expirationDecision:Boolean(registered.expiredBatchId),action:registered.expiredBatchId?'create':'append'});
-	await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:registered.batch.id,expectedLastReceivedAt:registered.batch.lastReceivedAt} satisfies BatchProcessingMessage,{delaySeconds:getLineMessageBatchWindowSeconds(env)});
+	await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:registered.batch.id,expectedLastReceivedAt:registered.batch.lastReceivedAt} satisfies BatchProcessingMessage,{delaySeconds:batchWindowSeconds});
 }
 
 async function acknowledgeAndQueueImage(event: LineImageMessageEvent, env: WorkerEnv): Promise<void> {
@@ -86,12 +87,29 @@ export async function processWebhookEvents(body: LineWebhookPayload, env: Worker
 			const conversationKey = buildLineConversationKey(event.source);
 			if (event.message.text.trim().toLowerCase() === '/done') {
 				const now=new Date(event.timestamp??Date.now()).toISOString();
-				const expired=conversationKey?await expireActiveBatchForIncoming(env.DB,conversationKey,now):null;
-				const closed = !expired&&conversationKey ? await closeCollectingBatch(env.DB, conversationKey,now) : null;
-				if (closed?.processingAt) {
-					await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:closed.id,expectedLastReceivedAt:closed.lastReceivedAt,closedProcessingToken:closed.processingAt} satisfies BatchProcessingMessage);
+				const decision=conversationKey?await claimBatchForDone(env.DB,conversationKey,now):{outcome:'not_found'} as const;
+				let queueAction='none';
+				let duplicateSuppressionReason:string|null=null;
+				if(decision.outcome==='claimed') {
+					const token=decision.batch.processingAt!;
+					try{
+						await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:decision.batch.id,expectedLastReceivedAt:decision.batch.lastReceivedAt,closedProcessingToken:token} satisfies BatchProcessingMessage);
+						queueAction='enqueued';
+					}catch(error){
+						queueAction=await releaseDoneClaim(env.DB,decision.batch.id,token,now)?'enqueue_failed_claim_released':'enqueue_failed_claim_changed';
+						console.error({event:'line_batch_done_enqueue_failed',batchId:decision.batch.id,queueAction,error:error instanceof Error?error.message:String(error)});
+						throw error;
+					}
 					await replyToLine(event.replyToken, 'Batch closed – processing now.', env.LINE_CHANNEL_ACCESS_TOKEN);
-				} else await replyToLine(event.replyToken, 'No active batch to close.', env.LINE_CHANNEL_ACCESS_TOKEN);
+				}else if(decision.outcome==='already_processing'){
+					duplicateSuppressionReason='batch_already_processing';
+					await replyToLine(event.replyToken,'This batch is already being processed.',env.LINE_CHANNEL_ACCESS_TOKEN);
+				}else if(decision.outcome==='already_completed'){
+					duplicateSuppressionReason=`batch_status_${decision.batch.status}`;
+					await replyToLine(event.replyToken,'This batch has already been processed.',env.LINE_CHANNEL_ACCESS_TOKEN);
+				}else await replyToLine(event.replyToken, 'No active batch to close.', env.LINE_CHANNEL_ACCESS_TOKEN);
+				const batch=decision.outcome==='not_found'?null:decision.batch;
+				console.log({event:'line_batch_done_decision',conversationKey,webhookEventId:event.webhookEventId??event.message.id,batchId:batch?.id??null,previousStatus:decision.outcome==='claimed'?decision.previousStatus:batch?.status??null,currentStatus:batch?.status??null,expiresAt:batch?.expiresAt??null,doneTimestamp:now,expiredAtReceipt:batch?batch.expiresAt<=now:null,claimOutcome:decision.outcome,claimReason:decision.outcome==='claimed'?decision.claimReason:null,queueAction,duplicateSuppressionReason});
 				continue;
 			}
 			if (isKnownCommand(event.message.text)) {
@@ -109,9 +127,10 @@ export async function processWebhookEvents(body: LineWebhookPayload, env: Worker
 					text: event.message.text,
 					receivedAt,
 				});
-				const registered=await registerBatchText(env.DB,{messageId:event.message.id,webhookEventId:event.webhookEventId,text:event.message.text,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent)});
+				const batchWindowSeconds=getLineMessageBatchWindowSeconds(env);
+				const registered=await registerBatchText(env.DB,{messageId:event.message.id,webhookEventId:event.webhookEventId,text:event.message.text,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent)},batchWindowSeconds);
 				console.log({event:'line_batch_lifecycle',lineUserId:event.source?.userId,webhookEventId:event.webhookEventId??event.message.id,batchId:registered.batch.id,expiresAt:registered.batch.expiresAt,expirationDecision:Boolean(registered.expiredBatchId),action:registered.expiredBatchId?'create':'append'});
-				if(!registered.duplicate)await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:registered.batch.id,expectedLastReceivedAt:registered.batch.lastReceivedAt} satisfies BatchProcessingMessage,{delaySeconds:getLineMessageBatchWindowSeconds(env)});
+				if(!registered.duplicate)await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:registered.batch.id,expectedLastReceivedAt:registered.batch.lastReceivedAt} satisfies BatchProcessingMessage,{delaySeconds:batchWindowSeconds});
 				await replyToLine(
 					event.replyToken,
 					'Event details received – waiting for related images or text.',

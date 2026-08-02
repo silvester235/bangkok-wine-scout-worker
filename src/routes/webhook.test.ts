@@ -7,6 +7,7 @@ import { processWebhookEvents } from './webhook';
 const { replyToLine } = vi.hoisted(() => ({
 	replyToLine: vi.fn().mockResolvedValue(undefined),
 }));
+const queueSend=vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../services/line', () => ({
 	downloadLineMessageContent: vi.fn(),
@@ -41,14 +42,17 @@ beforeEach(async () => {
 	await env.DB.prepare('DELETE FROM line_image_batch_assets').run();
 	await env.DB.prepare('DELETE FROM line_image_batches').run();
 	replyToLine.mockClear();
+	queueSend.mockClear();
 });
 
-function textWebhook(messageId: string, text: string): LineWebhookPayload {
+const testEnv=(windowSeconds='60')=>({...env,IMAGE_PROCESSING_QUEUE:{send:queueSend},LINE_MESSAGE_BATCH_WINDOW_SECONDS:windowSeconds}) as unknown as WorkerEnv;
+
+function textWebhook(messageId: string, text: string, timestamp='2026-08-15T10:00:00.000Z'): LineWebhookPayload {
 	return {
 		events: [{
 			type: 'message',
 			replyToken: `reply-${messageId}`,
-			timestamp: Date.parse('2026-08-15T10:00:00.000Z'),
+			timestamp: Date.parse(timestamp),
 			source: { userId: 'user-1' },
 			message: { id: messageId, type: 'text', text },
 		}],
@@ -57,14 +61,14 @@ function textWebhook(messageId: string, text: string): LineWebhookPayload {
 
 describe('LINE text webhook acknowledgement', () => {
 	it('routes a known command and returns its command response', async () => {
-		await processWebhookEvents(textWebhook('command-1', 'ping'), env as WorkerEnv);
+		await processWebhookEvents(textWebhook('command-1', 'ping'), testEnv());
 
 		expect(replyToLine).toHaveBeenCalledWith('reply-command-1', 'pong', undefined);
 		expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM line_text_contexts').first<{ count: number }>()).toEqual({ count: 0 });
 	});
 
 	it('stores event text in the active message batch and acknowledges collection', async () => {
-		await processWebhookEvents(textWebhook('text-1', 'Wine dinner at 7pm'), env as WorkerEnv);
+		await processWebhookEvents(textWebhook('text-1', 'Wine dinner at 7pm'), testEnv());
 		const stored = await env.DB.prepare(
 			'SELECT message_id, text_content FROM line_text_contexts WHERE message_id = ?',
 		).bind('text-1').first<{ message_id: string; text_content: string }>();
@@ -77,10 +81,22 @@ describe('LINE text webhook acknowledgement', () => {
 		);
 	});
 
-	it('closes an active batch with /done and handles repeated completion safely',async()=>{await processWebhookEvents(textWebhook('text-1','Wine dinner 5 August 2026 at 19:00'),env as WorkerEnv);await processWebhookEvents(textWebhook('done-1','/done'),env as WorkerEnv);expect(replyToLine).toHaveBeenCalledWith('reply-done-1','Batch closed – processing now.',undefined);await processWebhookEvents(textWebhook('done-2','/done'),env as WorkerEnv);expect(replyToLine).toHaveBeenCalledWith('reply-done-2','No active batch to close.',undefined);});
+	it('closes an active batch with /done and suppresses a duplicate completion job',async()=>{const worker=testEnv();await processWebhookEvents(textWebhook('text-1','Wine dinner 5 August 2026 at 19:00'),worker);queueSend.mockClear();await processWebhookEvents(textWebhook('done-1','/done'),worker);expect(replyToLine).toHaveBeenCalledWith('reply-done-1','Batch closed – processing now.',undefined);expect(queueSend).toHaveBeenCalledTimes(1);await processWebhookEvents(textWebhook('done-2','/done'),worker);expect(replyToLine).toHaveBeenCalledWith('reply-done-2','This batch is already being processed.',undefined);expect(queueSend).toHaveBeenCalledTimes(1)});
+
+	it.each([['exactly at expiry','2026-08-15T10:01:00.000Z'],['after expiry','2026-08-15T10:01:01.000Z']])('lets /done claim a batch %s',async(_label,doneAt)=>{const worker=testEnv();await processWebhookEvents(textWebhook('text-1','https://example.com/event'),worker);queueSend.mockClear();await processWebhookEvents(textWebhook('done-1','/done',doneAt),worker);expect(replyToLine).toHaveBeenCalledWith('reply-done-1','Batch closed – processing now.',undefined);expect(replyToLine).not.toHaveBeenCalledWith('reply-done-1','No active batch to close.',undefined);expect(queueSend).toHaveBeenCalledTimes(1)});
+
+	it('uses the custom message window for persistence and queue scheduling',async()=>{await processWebhookEvents(textWebhook('text-1','https://example.com/event'),testEnv('90'));const row=await env.DB.prepare('SELECT expires_at FROM line_image_batches LIMIT 1').first<{expires_at:string}>();expect(row?.expires_at).toBe('2026-08-15T10:01:30.000Z');expect(queueSend).toHaveBeenCalledWith(expect.anything(),{delaySeconds:90})});
+
+	it('reports no active batch only when the conversation has no batch',async()=>{await processWebhookEvents(textWebhook('done-1','/done'),testEnv());expect(replyToLine).toHaveBeenCalledWith('reply-done-1','No active batch to close.',undefined);expect(queueSend).not.toHaveBeenCalled()});
+
+	it('acknowledges a timeout claim that won immediately before /done without another job',async()=>{const worker=testEnv();await processWebhookEvents(textWebhook('text-1','https://example.com/event'),worker);await env.DB.prepare(`UPDATE line_image_batches SET status='processing',processing_at=?,closed_at=? WHERE conversation_key=? AND status='collecting'`).bind('queue-claim','2026-08-15T10:01:00.000Z','user:user-1').run();queueSend.mockClear();await processWebhookEvents(textWebhook('done-1','/done','2026-08-15T10:01:00.000Z'),worker);expect(replyToLine).toHaveBeenCalledWith('reply-done-1','This batch is already being processed.',undefined);expect(queueSend).not.toHaveBeenCalled()});
+
+	it('reports an already completed batch without creating a job',async()=>{const worker=testEnv();await processWebhookEvents(textWebhook('text-1','https://example.com/event'),worker);await env.DB.prepare(`UPDATE line_image_batches SET status='completed',completed_at=? WHERE conversation_key=? AND status='collecting'`).bind('2026-08-15T10:00:30.000Z','user:user-1').run();queueSend.mockClear();await processWebhookEvents(textWebhook('done-1','/done','2026-08-15T10:00:40.000Z'),worker);expect(replyToLine).toHaveBeenCalledWith('reply-done-1','This batch has already been processed.',undefined);expect(queueSend).not.toHaveBeenCalled()});
+
+	it('releases a done claim when immediate queueing fails so a retry can claim it',async()=>{const worker=testEnv();await processWebhookEvents(textWebhook('text-1','https://example.com/event'),worker);queueSend.mockReset().mockRejectedValueOnce(new Error('queue unavailable')).mockResolvedValue(undefined);await expect(processWebhookEvents(textWebhook('done-1','/done'),worker)).rejects.toThrow('queue unavailable');expect(await env.DB.prepare('SELECT status FROM line_image_batches LIMIT 1').first<{status:string}>()).toEqual({status:'collecting'});await processWebhookEvents(textWebhook('done-1','/done'),worker);expect(replyToLine).toHaveBeenCalledWith('reply-done-1','Batch closed – processing now.',undefined)});
 
 	it('does not send the unknown-command response for stored event text', async () => {
-		await processWebhookEvents(textWebhook('text-1', 'Wine dinner at 7pm'), env as WorkerEnv);
+		await processWebhookEvents(textWebhook('text-1', 'Wine dinner at 7pm'), testEnv());
 
 		expect(replyToLine).not.toHaveBeenCalledWith(
 			expect.anything(),
@@ -91,8 +107,8 @@ describe('LINE text webhook acknowledgement', () => {
 
 	it('keeps duplicate text delivery idempotent while acknowledging the retry', async () => {
 		const webhook = textWebhook('text-1', 'Wine dinner at 7pm');
-		await processWebhookEvents(webhook, env as WorkerEnv);
-		await processWebhookEvents(webhook, env as WorkerEnv);
+		await processWebhookEvents(webhook, testEnv());
+		await processWebhookEvents(webhook, testEnv());
 		const count = await env.DB.prepare(
 			'SELECT COUNT(*) AS count FROM line_text_contexts WHERE message_id = ?',
 		).bind('text-1').first<{ count: number }>();
