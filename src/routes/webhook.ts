@@ -11,7 +11,7 @@ import {
 	buildLineConversationKey,
 	storePendingLineText,
 } from '../services/line-text-context';
-import { closeCollectingBatch, registerBatchAsset, registerBatchText } from '../services/line-image-batch-repository';
+import { closeCollectingBatch, expireActiveBatchForIncoming, registerBatchAsset, registerBatchText } from '../services/line-image-batch-repository';
 import type { BatchProcessingMessage } from '../services/line-image-batch-processing';
 import type { WorkerEnv } from '../types/env';
 import type {
@@ -27,6 +27,7 @@ export interface ImageProcessingMessage {
 	pushTarget?: string;
 	conversationKey?: string;
 	receivedAt: string;
+	webhookEventId?: string;
 }
 
 function isTextMessageEvent(event: unknown): event is LineTextMessageEvent {
@@ -55,19 +56,24 @@ export async function processImageMessage(message: ImageProcessingMessage, env: 
 	});
 
 	const conversationKey=message.conversationKey??`line-message:${message.messageId}`;
-	const registered=await registerBatchAsset(env.DB,{assetId:asset.assetId,intakeId:asset.intakeId,lineMessageId:message.messageId,contentType:downloaded.contentType,r2ObjectKey:asset.objectKey,receivedAt:message.receivedAt,conversationKey,pushTarget:message.pushTarget});
+	const registered=await registerBatchAsset(env.DB,{assetId:asset.assetId,intakeId:asset.intakeId,lineMessageId:message.messageId,webhookEventId:message.webhookEventId,contentType:downloaded.contentType,r2ObjectKey:asset.objectKey,receivedAt:message.receivedAt,conversationKey,pushTarget:message.pushTarget});
 	if(registered.duplicate) return;
+	console.log({event:'line_batch_lifecycle',lineUserId:message.lineUserId,webhookEventId:message.webhookEventId??message.messageId,batchId:registered.batch.id,expiresAt:registered.batch.expiresAt,expirationDecision:Boolean(registered.expiredBatchId),action:registered.expiredBatchId?'create':'append'});
 	await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:registered.batch.id,expectedLastReceivedAt:registered.batch.lastReceivedAt} satisfies BatchProcessingMessage,{delaySeconds:getLineMessageBatchWindowSeconds(env)});
 }
 
 async function acknowledgeAndQueueImage(event: LineImageMessageEvent, env: WorkerEnv): Promise<void> {
+	const conversationKey=buildLineConversationKey(event.source)??undefined;
+	const receivedAt=new Date(event.timestamp??Date.now()).toISOString();
+	if(conversationKey){const expired=await expireActiveBatchForIncoming(env.DB,conversationKey,receivedAt);if(expired){console.log({event:'line_batch_lifecycle',lineUserId:event.source?.userId,webhookEventId:event.webhookEventId??event.message.id,batchId:expired.id,previousBatchStatus:'collecting',batchAge:Date.parse(receivedAt)-Date.parse(expired.createdAt),expiresAt:expired.expiresAt,expirationDecision:true,action:'close'});await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:expired.id,expectedLastReceivedAt:expired.lastReceivedAt,closedProcessingToken:expired.processingAt!} satisfies BatchProcessingMessage);}}
 	await env.IMAGE_PROCESSING_QUEUE.send({
 		type: 'register_image',
 		messageId: event.message.id,
 		lineUserId: event.source?.userId,
 		pushTarget: getPushTarget(event),
-		conversationKey: buildLineConversationKey(event.source) ?? undefined,
-		receivedAt: new Date(event.timestamp ?? Date.now()).toISOString(),
+		conversationKey,
+		receivedAt,
+		webhookEventId:event.webhookEventId,
 	} satisfies ImageProcessingMessage);
 
 	await replyToLine(event.replyToken, 'Image received – waiting for related messages.', env.LINE_CHANNEL_ACCESS_TOKEN);
@@ -79,7 +85,9 @@ export async function processWebhookEvents(body: LineWebhookPayload, env: Worker
 		else if (isTextMessageEvent(event)) {
 			const conversationKey = buildLineConversationKey(event.source);
 			if (event.message.text.trim().toLowerCase() === '/done') {
-				const closed = conversationKey ? await closeCollectingBatch(env.DB, conversationKey) : null;
+				const now=new Date(event.timestamp??Date.now()).toISOString();
+				const expired=conversationKey?await expireActiveBatchForIncoming(env.DB,conversationKey,now):null;
+				const closed = !expired&&conversationKey ? await closeCollectingBatch(env.DB, conversationKey,now) : null;
 				if (closed?.processingAt) {
 					await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:closed.id,expectedLastReceivedAt:closed.lastReceivedAt,closedProcessingToken:closed.processingAt} satisfies BatchProcessingMessage);
 					await replyToLine(event.replyToken, 'Batch closed – processing now.', env.LINE_CHANNEL_ACCESS_TOKEN);
@@ -93,13 +101,16 @@ export async function processWebhookEvents(body: LineWebhookPayload, env: Worker
 
 			if (event.message.text.trim() && conversationKey) {
 				const receivedAt=new Date(event.timestamp ?? Date.now()).toISOString();
+				const expired=await expireActiveBatchForIncoming(env.DB,conversationKey,receivedAt);
+				if(expired)await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:expired.id,expectedLastReceivedAt:expired.lastReceivedAt,closedProcessingToken:expired.processingAt!} satisfies BatchProcessingMessage);
 				await storePendingLineText(env.DB, {
 					messageId: event.message.id,
 					conversationKey,
 					text: event.message.text,
 					receivedAt,
 				});
-				const registered=await registerBatchText(env.DB,{messageId:event.message.id,text:event.message.text,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent)});
+				const registered=await registerBatchText(env.DB,{messageId:event.message.id,webhookEventId:event.webhookEventId,text:event.message.text,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent)});
+				console.log({event:'line_batch_lifecycle',lineUserId:event.source?.userId,webhookEventId:event.webhookEventId??event.message.id,batchId:registered.batch.id,expiresAt:registered.batch.expiresAt,expirationDecision:Boolean(registered.expiredBatchId),action:registered.expiredBatchId?'create':'append'});
 				if(!registered.duplicate)await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:registered.batch.id,expectedLastReceivedAt:registered.batch.lastReceivedAt} satisfies BatchProcessingMessage,{delaySeconds:getLineMessageBatchWindowSeconds(env)});
 				await replyToLine(
 					event.replyToken,

@@ -31,6 +31,7 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 
 	const assets=await listBatchAssets(env.DB,claimed.id);
 	const texts=await listBatchTexts(env.DB,claimed.id);
+	console.log({event:'line_batch_processing_snapshot',batchId:claimed.id,action:'process',assetCount:assets.length,textMessageCount:texts.length,expiresAt:claimed.expiresAt});
 	const contexts:BatchAssetContext[]=[];
 	const imageContexts:BatchAssetContext[]=[];
 	const sourceAssets=new Map<string,EventSourceAssetInput>();

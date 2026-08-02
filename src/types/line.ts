@@ -6,6 +6,7 @@ export interface LineEventSource {
 
 export interface LineTextMessageEvent {
 	type: 'message';
+	webhookEventId?: string;
 	replyToken: string;
 	timestamp?: number;
 	source?: LineEventSource;
@@ -18,6 +19,7 @@ export interface LineTextMessageEvent {
 
 export interface LineImageMessageEvent {
 	type: 'message';
+	webhookEventId?: string;
 	replyToken: string;
 	timestamp?: number;
 	source?: LineEventSource;
