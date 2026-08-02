@@ -80,6 +80,7 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 	}
 	if(assets.length===0&&webSources.filter((source)=>source.status==='completed').length===0&&texts.length>0){const first=texts[0];contexts.push({assetId:first.assetId,intakeId:`line-text-${first.messageId}`,ordinal:first.ordinal,receivedAt:first.receivedAt,contentType:'text/plain',ocrText:'',lineText:combinedText});}
 	else if(combinedText&&contexts.length>0)contexts[0].lineText=[contexts[0].lineText,combinedText].filter(Boolean).join('\n\n');
+	if(contexts.length===0){console.error({event:'line_batch_processing_skipped',batchId:claimed.id,reason:'no useful extraction context',webSourceErrorCodes:webSources.map((source)=>source.errorCode)});if(!await completeBatch(env.DB,claimed.id,'needs_review',[]))return;if(claimed.pushTarget&&await markBatchNotificationSent(env.DB,claimed.id))try{await pushToLine(claimed.pushTarget,'The event page returned no usable content. Please try again later or send the event details as text or an image.',env.LINE_CHANNEL_ACCESS_TOKEN);}catch(error){console.error('LINE BATCH STATUS PUSH FAILED:',error);}return;}
 
 	let analysis=await extractBatchEvents(env.AI,env.EVENT_INTAKES,claimed.id,contexts);
 	const fallbackInvoked=analysis.diagnostics.fallbackRequired;

@@ -11,7 +11,7 @@ import {
 	buildLineConversationKey,
 	storePendingLineText,
 } from '../services/line-text-context';
-import { claimBatchForDone, expireActiveBatchForIncoming, registerBatchAsset, registerBatchText, registerBatchWebSource, releaseDoneClaim } from '../services/line-image-batch-repository';
+import { claimBatchForDone, expireActiveBatchForIncoming, finalizeUselessWebBatch, findPriorWebSourceOutcome, findUrlIngestionDelivery, recordUrlIngestionDelivery, registerBatchAsset, registerBatchText, registerBatchWebSource, releaseDoneClaim } from '../services/line-image-batch-repository';
 import { detectPrimaryWebUrl, fetchAndExtractWebPage, fetchWebPageImage } from '../services/web-page-ingestion-service';
 import type { BatchProcessingMessage } from '../services/line-image-batch-processing';
 import type { WorkerEnv } from '../types/env';
@@ -124,6 +124,9 @@ export async function processWebhookEvents(body: LineWebhookPayload, env: Worker
 				if(expired)await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:expired.id,expectedLastReceivedAt:expired.lastReceivedAt,closedProcessingToken:expired.processingAt!} satisfies BatchProcessingMessage);
 				const detectedUrl=detectPrimaryWebUrl(event.message.text);
 				if(detectedUrl){
+					const deliveryId=event.webhookEventId??event.message.id;const priorDelivery=await findUrlIngestionDelivery(env.DB,deliveryId);
+					if(priorDelivery){console.log({event:'line_web_source_ingestion',webhookEventId:deliveryId,batchId:priorDelivery.batchId,normalizedUrl:priorDelivery.normalizedUrl,attemptNumber:0,retryPerformed:false,retryReason:null,firstStatus:null,secondStatus:null,firstResponseBytes:null,secondResponseBytes:null,firstParserStatus:null,secondParserStatus:null,finalErrorCode:priorDelivery.errorCode,reusedPriorSuccess:priorDelivery.status==='completed',ignoredPriorFailure:false,duplicate:true});await replyToLine(event.replyToken,priorDelivery.status==='completed'?'Event page received – waiting for related images or text.':`I couldn't read that event page. You can send the event details as text or an image instead.`,env.LINE_CHANNEL_ACCESS_TOKEN);continue;}
+					const priorOutcome=await findPriorWebSourceOutcome(env.DB,detectedUrl.normalizedUrl);const ignoredPriorFailure=priorOutcome==='failed';
 					const ingestion=await fetchAndExtractWebPage(detectedUrl.url,{timeoutMs:8_000,maxRedirects:5,maxHtmlBytes:1_500_000,maxExtractedTextChars:40_000,userAgent:'BangkokWineScoutBot/1.0 (+https://bangkokwinescout.com)'});
 					console.log({
 						event:'line_web_source_extracted',
@@ -142,6 +145,7 @@ export async function processWebhookEvents(body: LineWebhookPayload, env: Worker
 					});
 					const batchWindowSeconds=getLineMessageBatchWindowSeconds(env);
 					const registered=await registerBatchWebSource(env.DB,{messageId:event.message.id,webhookEventId:event.webhookEventId,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent),...ingestion},batchWindowSeconds);
+					await recordUrlIngestionDelivery(env.DB,{webhookEventId:deliveryId,messageId:event.message.id,normalizedUrl:detectedUrl.normalizedUrl,batchId:registered.batch.id,status:ingestion.status,errorCode:ingestion.errorCode,receivedAt});
 					await env.EVENT_INTAKES.put(`line-batches/${registered.batch.id}/web-sources/${encodeURIComponent(detectedUrl.normalizedUrl)}.json`,JSON.stringify(ingestion,null,2),{httpMetadata:{contentType:'application/json'}});
 					if(!registered.duplicate&&ingestion.status==='completed'&&ingestion.mainImageUrl){
 						const image=await fetchWebPageImage(ingestion.mainImageUrl,{timeoutMs:6_000,maxRedirects:3,maxBytes:8_000_000,userAgent:'BangkokWineScoutBot/1.0 (+https://bangkokwinescout.com)'});
@@ -154,8 +158,9 @@ export async function processWebhookEvents(body: LineWebhookPayload, env: Worker
 						const textRegistration=await registerBatchText(env.DB,{messageId:`${event.message.id}:context`,webhookEventId:`${event.webhookEventId??event.message.id}:context`,text:detectedUrl.contextText,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent)},batchWindowSeconds);
 						contextRegistered=!textRegistration.duplicate;scheduledBatch=textRegistration.batch;
 					}
-					console.log({event:'line_web_source_ingestion',batchId:registered.batch.id,normalizedUrl:ingestion.normalizedUrl,status:ingestion.status,httpStatus:ingestion.httpStatus,errorCode:ingestion.errorCode,duplicate:registered.duplicate});
-					if(!registered.duplicate||contextRegistered)await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:scheduledBatch.id,expectedLastReceivedAt:scheduledBatch.lastReceivedAt},{delaySeconds:batchWindowSeconds});
+					console.log({event:'line_web_source_ingestion',webhookEventId:deliveryId,batchId:registered.batch.id,normalizedUrl:ingestion.normalizedUrl,status:ingestion.status,httpStatus:ingestion.httpStatus,errorCode:ingestion.errorCode,attemptNumber:ingestion.attemptNumber,retryPerformed:ingestion.retryPerformed,retryReason:ingestion.retryReason,firstStatus:ingestion.firstStatus,secondStatus:ingestion.secondStatus,firstResponseBytes:ingestion.firstResponseBytes,secondResponseBytes:ingestion.secondResponseBytes,firstParserStatus:ingestion.firstParserStatus,secondParserStatus:ingestion.secondParserStatus,finalErrorCode:ingestion.errorCode,reusedPriorSuccess:registered.duplicate&&ingestion.status==='completed',ignoredPriorFailure,duplicate:registered.duplicate});
+					const finalizedUseless=ingestion.status!=='completed'&&!contextRegistered?await finalizeUselessWebBatch(env.DB,registered.batch.id):false;
+					if(!finalizedUseless&&((ingestion.status==='completed'&&!registered.duplicate)||contextRegistered))await env.IMAGE_PROCESSING_QUEUE.send({type:'process_batch',batchId:scheduledBatch.id,expectedLastReceivedAt:scheduledBatch.lastReceivedAt},{delaySeconds:batchWindowSeconds});
 					await replyToLine(event.replyToken,ingestion.status==='completed'?'Event page received – waiting for related images or text.':`I couldn't read that event page (${ingestion.errorMessage??'unsupported page'}). You can send the event details as text or an image instead.`,env.LINE_CHANNEL_ACCESS_TOKEN);
 					continue;
 				}
