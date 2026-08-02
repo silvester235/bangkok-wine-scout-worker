@@ -132,8 +132,13 @@ export async function processWebhookEvents(body: LineWebhookPayload, env: Worker
 						status:ingestion.status,
 						title:ingestion.title,
 						description:ingestion.description,
+						openGraph:ingestion.openGraph,
 						jsonLd:ingestion.jsonLd,
 						extractedText:ingestion.extractedText,
+						extractedTextLength:ingestion.extractedTextLength,
+						originalReadableTextChars:ingestion.originalReadableTextChars,
+						textReduced:ingestion.textReduced,
+						truncationOccurred:ingestion.textReduced,
 					});
 					const batchWindowSeconds=getLineMessageBatchWindowSeconds(env);
 					const registered=await registerBatchWebSource(env.DB,{messageId:event.message.id,webhookEventId:event.webhookEventId,receivedAt,conversationKey,pushTarget:getPushTarget(event as unknown as LineImageMessageEvent),...ingestion},batchWindowSeconds);

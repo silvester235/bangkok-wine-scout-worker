@@ -2,6 +2,7 @@ import { buildEventExtractionContext } from './event-extraction-context';
 import { extractAndStoreEvent, type ExtractedWineEvent } from './event-extraction';
 import { normalizeUtf8Text, normalizeWineEvent } from './event-normalizer';
 import type { BatchAssetContext, BatchExtractedEvent } from './batch-event-extraction';
+import { parseEventDateFromText } from './date-parser';
 
 export interface SingleAssetFallbackDiagnostic {
 	assetId: string;
@@ -55,7 +56,8 @@ export async function recoverBatchEventsWithSingleAssetFallback(ai: Ai, bucket: 
 			assetId: asset.assetId,
 			context: buildEventExtractionContext({ sourceText: asset.lineText, ocrText: asset.ocrText }),
 		});
-		const event = extraction.status === 'completed' ? extraction.event : null;
+		let event = extraction.status === 'completed' ? extraction.event : null;
+		if(event&&!event.date){const deterministicDate=parseEventDateFromText(`${asset.lineText??''}\n${asset.ocrText}`,new Date(asset.receivedAt));if(deterministicDate)event={...event,date:deterministicDate};}
 		if (event) extracted.set(asset.assetId, event);
 		const strongPrimary = event ? isStrongPrimaryCandidate(event, `${asset.lineText ?? ''}\n${asset.ocrText}`) : false;
 		const menuLike = isMenuLikeAsset(event, asset.ocrText);

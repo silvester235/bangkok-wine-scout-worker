@@ -2,6 +2,7 @@ import type { ExtractedWineEvent } from './event-extraction';
 import type { EventAssetRole } from './event-repository';
 
 export const BATCH_EVENT_MODEL = '@cf/meta/llama-3.1-8b-instruct-fast';
+export const MAX_BATCH_PROMPT_CHARS = 14_000;
 
 export interface BatchAssetContext {
 	assetId: string;
@@ -40,8 +41,8 @@ const eventProperties = {
 	address: { type: ['string', 'null'] }, date: { type: ['string', 'null'] }, startTime: { type: ['string', 'null'] },
 	endTime: { type: ['string', 'null'] }, timezone: { type: ['string', 'null'] }, price: { type: ['string', 'null'] },
 	currency: { type: ['string', 'null'] }, bookingUrl: { type: ['string', 'null'] }, contact: { type: ['string', 'null'] },
-	wines: { type: 'array', items: { type: 'string' } }, wineRegions: { type: 'array', items: { type: 'string' } },
-	menu: { type: 'array', items: { type: 'string' } }, notes: { type: 'array', items: { type: 'string' } },
+	wines: { type: 'array', maxItems: 20, items: { type: 'string' } }, wineRegions: { type: 'array', maxItems: 20, items: { type: 'string' } },
+	menu: { type: 'array', maxItems: 20, items: { type: 'string' } }, notes: { type: 'array', maxItems: 20, items: { type: 'string' } },
 	confidence: { type: 'number' },
 	assetAssignments: { type: 'array', items: { type: 'object', properties: { assetId: { type: 'string' }, role: { type: 'string', enum: ['main', 'flyer', 'menu', 'reminder', 'social', 'map', 'other'] } }, required: ['assetId', 'role'], additionalProperties: false } },
 } as const;
@@ -93,7 +94,7 @@ export function validateBatchAnalysisSchema(value: unknown): string | null {
 }
 
 export function buildBatchAnalysisContext(assets: BatchAssetContext[]): string {
-	return assets.map((asset) => `ASSET ${asset.ordinal}\nassetId: ${asset.assetId}\nreceivedAt: ${asset.receivedAt}\ncontentType: ${asset.contentType}\n${asset.lineText ? `LINE TEXT:\n${asset.lineText}\n` : ''}OCR TEXT:\n${asset.ocrText || '[OCR unavailable]'}`).join('\n\n---\n\n');
+	return assets.map((asset) => `ASSET ${asset.ordinal}\nassetId: ${asset.assetId}\nreceivedAt: ${asset.receivedAt}\ncontentType: ${asset.contentType}\n${asset.lineText ? `LINE TEXT:\n${asset.lineText}\n` : ''}SOURCE CONTENT:\n${asset.ocrText || '[content unavailable]'}`).join('\n\n---\n\n');
 }
 
 function failureResult(assets: BatchAssetContext[], diagnostics: BatchExtractionDiagnostics): BatchExtractionResult {
@@ -101,13 +102,14 @@ function failureResult(assets: BatchAssetContext[], diagnostics: BatchExtraction
 }
 
 export async function extractBatchEvents(ai: Ai, bucket: R2Bucket, batchId: string, assets: BatchAssetContext[]): Promise<BatchExtractionResult> {
-	const context = buildBatchAnalysisContext(assets);
+	const unboundedContext=buildBatchAnalysisContext(assets);const context=unboundedContext.slice(0,MAX_BATCH_PROMPT_CHARS);const promptTruncated=context.length<unboundedContext.length;
+	console.log({event:'line_batch_analysis_prompt_metrics',batchId,promptSize:context.length,estimatedPromptTokens:Math.ceil(new TextEncoder().encode(context).byteLength/4),truncationOccurred:promptTruncated,textReduced:promptTruncated,originalPromptSize:unboundedContext.length});
 	await bucket.put(`line-batches/${batchId}/analysis-context.txt`, context, { httpMetadata: { contentType: 'text/plain; charset=utf-8' } });
 	let rawResponse: unknown = null;
 	let parsed: unknown;
 	try {
 		if (!assets.some((asset) => asset.ocrText || asset.lineText)) throw new Error('Batch analysis context is empty.');
-		rawResponse = await ai.run(BATCH_EVENT_MODEL, { messages: [{ role: 'system', content: 'This LINE message batch represents at most one event. Analyze all labeled LINE text and image OCR together and return zero or one event candidate. Combine complementary flyer, menu, reminder, and user-text facts into that one candidate. Never split the batch into multiple events and never invent missing facts. If the batch cannot safely identify one event, return events: [], preserve all asset IDs in unassignedAssets, and set ambiguous: true. Asset assignments are role hints only; ownership is finalized deterministically.' }, { role: 'user', content: context }], temperature: 0, max_tokens: 4096, stream: false, response_format: { type: 'json_schema', json_schema: schema } } as never) as unknown;
+		rawResponse = await ai.run(BATCH_EVENT_MODEL, { messages: [{ role: 'system', content: 'This LINE message batch represents at most one event. Analyze each labeled source once and return zero or one concise event candidate. Never repeat source prose in arrays: wines, menu, and notes must contain only distinct event facts, with at most 20 items each. Never invent missing facts. If the batch cannot safely identify one event, return events: [], preserve all asset IDs in unassignedAssets, and set ambiguous: true. Asset assignments are role hints only; ownership is finalized deterministically.' }, { role: 'user', content: context }], temperature: 0, max_tokens: 1600, stream: false, response_format: { type: 'json_schema', json_schema: schema } } as never) as unknown;
 		console.log({ event: 'line_batch_analysis_raw_ai_response', batchId, model: BATCH_EVENT_MODEL, rawResponse });
 		try { parsed = unwrapBatchResponse(rawResponse); }
 		catch (error) {

@@ -1,5 +1,5 @@
 import { beforeEach,describe,expect,it,vi } from 'vitest';
-import { extractBatchEvents,type BatchAssetContext } from './batch-event-extraction';
+import { extractBatchEvents,MAX_BATCH_PROMPT_CHARS,type BatchAssetContext } from './batch-event-extraction';
 
 const put=vi.fn().mockResolvedValue(undefined);
 const asset:BatchAssetContext={assetId:'flyer',intakeId:'intake',ordinal:1,receivedAt:'2026-08-01T00:00:00Z',contentType:'image/jpeg',ocrText:'TENUTE GIROLAMO WINE DINNER WEDNESDAY 5TH AUGUST 2026 18:30 HRS'};
@@ -11,4 +11,5 @@ describe('batch AI response diagnostics',()=>{
 	it('records malformed JSON and requires fallback',async()=>{const result=await extractBatchEvents({run:vi.fn().mockResolvedValue({response:'not json'})} as unknown as Ai,{put} as unknown as R2Bucket,'b1',[asset]);expect(result.diagnostics.parseSuccess).toBe(false);expect(result.diagnostics.parseError).toBeTruthy();expect(result.diagnostics.fallbackRequired).toBe(true)});
 	it('records a schema-invalid response and requires fallback',async()=>{const result=await extractBatchEvents({run:vi.fn().mockResolvedValue({response:{events:'invalid',unassignedAssets:[],ambiguous:false}})} as unknown as Ai,{put} as unknown as R2Bucket,'b1',[asset]);expect(result.diagnostics.parseSuccess).toBe(true);expect(result.diagnostics.schemaValidationSuccess).toBe(false);expect(result.diagnostics.schemaValidationError).toBe('events must be an array');expect(result.diagnostics.fallbackRequired).toBe(true)});
 	it('accepts a normal direct-object response without invoking fallback',async()=>{const result=await extractBatchEvents({run:vi.fn().mockResolvedValue({events:[validEvent],unassignedAssets:[],ambiguous:false})} as unknown as Ai,{put} as unknown as R2Bucket,'b1',[asset]);expect(result.events).toHaveLength(1);expect(result.diagnostics.parseSuccess).toBe(true);expect(result.diagnostics.schemaValidationSuccess).toBe(true);expect(result.diagnostics.fallbackRequired).toBe(false)});
+	it('caps the final user prompt and lowers the completion budget',async()=>{const run=vi.fn().mockResolvedValue({events:[validEvent],unassignedAssets:[],ambiguous:false});await extractBatchEvents({run} as unknown as Ai,{put} as unknown as R2Bucket,'b1',[{...asset,ocrText:'wine event '.repeat(10_000)}]);const request=run.mock.calls[0][1] as {messages:Array<{content:string}>;max_tokens:number};expect(request.messages[1].content.length).toBe(MAX_BATCH_PROMPT_CHARS);expect(request.max_tokens).toBe(1600);});
 });

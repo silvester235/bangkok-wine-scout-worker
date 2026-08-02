@@ -11,7 +11,8 @@ export interface WebPageIngestionResult {
 	status: 'completed' | 'unsupported' | 'failed'; httpStatus: number | null;
 	contentType: string | null; responseBytes: number | null; redirectCount: number;
 	title: string | null; description: string | null; canonicalUrl: string | null;
-	mainImageUrl: string | null; jsonLd: unknown[]; extractedText: string | null;
+	mainImageUrl: string | null; openGraph: Record<string,string>; jsonLd: unknown[]; extractedText: string | null;
+	originalReadableTextChars: number; extractedTextLength: number; textReduced: boolean;
 	errorCode: string | null; errorMessage: string | null; fetchedAt: string;
 }
 
@@ -80,26 +81,41 @@ function absoluteUrl(value: string | null, base: string): string | null {
 	try { const result = new URL(value, base); return ['http:','https:'].includes(result.protocol) ? result.toString() : null; } catch { return null; }
 }
 
+const EVENT_SIGNAL=/\b(event|wine|tasting|degustation|dinner|lunch|menu|course|booking|reserve|reservation|ticket|price|venue|location|date|time|(?:19|20)\d{2}|january|february|march|april|may|june|july|august|september|october|november|december)\b/i;
+
+function htmlToText(html:string):string{return decodeHtml(html.replace(/<(script|style|noscript|svg|template|nav|footer)\b[^>]*>[\s\S]*?<\/\1>/gi,' ').replace(/<!--([\s\S]*?)-->/g,' ').replace(/<\/?(?:p|div|section|article|main|header|aside|li|h[1-6]|br|tr|td|th)\b[^>]*>/gi,'\n').replace(/<[^>]+>/g,' ')).replace(/[ \t]+/g,' ').replace(/\s*\n\s*/g,'\n').replace(/\n{3,}/g,'\n\n').trim();}
+
+function eventFocusedText(html:string,maxChars:number):{text:string|null;originalChars:number;reduced:boolean}{
+	const full=htmlToText(html);const cap=Math.min(maxChars,5_000);const fullLines=full.split('\n').map((line)=>line.trim()).filter(Boolean);const selectedIndexes=new Set<number>();
+	if(full.length>cap)for(const [index,line] of fullLines.entries())if(EVENT_SIGNAL.test(line))for(let nearby=Math.max(0,index-1);nearby<=Math.min(fullLines.length-1,index+1);nearby++)selectedIndexes.add(nearby);
+	const selected=selectedIndexes.size?[...selectedIndexes].sort((a,b)=>a-b).map((index)=>fullLines[index]):fullLines;
+	const seen=new Set<string>();const lines=selected.filter((line)=>{const key=line.toLocaleLowerCase('en-US').replace(/\s+/g,' ');if(seen.has(key))return false;seen.add(key);return true;});
+	const cleaned=lines.join('\n');const text=cleaned.slice(0,cap).trim()||null;
+	return{text,originalChars:full.length,reduced:cleaned.length>cap||cleaned.length<full.length};
+}
+
+function dedupeJsonLd(values:unknown[]):unknown[]{const seen=new Set<string>();const result:unknown[]=[];const visit=(value:unknown)=>{if(!value||typeof value!=='object')return;const record=value as Record<string,unknown>;if(Array.isArray(record['@graph']))for(const item of record['@graph'] as unknown[])visit(item);const type=String(record['@type']??'');if(!/(event|product|webpage|article)/i.test(type))return;const kept:Record<string,unknown>={};for(const key of ['@type','@id','name','headline','description','startDate','endDate','eventStatus','eventAttendanceMode','location','offers','url','image','sku'])if(record[key]!==undefined)kept[key]=record[key];const serialized=JSON.stringify(kept);if(serialized.length>8_000||seen.has(serialized))return;seen.add(serialized);result.push(kept);};for(const value of values)visit(value);return result.slice(0,8);}
+
 function extractHtml(html: string, finalUrl: string, maxChars: number) {
 	const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(html);
-	let description: string | null = null; let canonicalUrl: string | null = null; let mainImageUrl: string | null = null;
+	let description: string | null = null; let canonicalUrl: string | null = null; let mainImageUrl: string | null = null;const openGraph:Record<string,string>={};
 	for (const tag of html.match(/<(?:meta|link)\b[^>]*>/gi) ?? []) {
 		const property = (attr(tag, 'property') ?? attr(tag, 'name') ?? '').toLowerCase();
 		const rel = (attr(tag, 'rel') ?? '').toLowerCase();
 		if (!description && ['description','og:description','twitter:description'].includes(property)) description = attr(tag, 'content');
 		if (!mainImageUrl && ['og:image','twitter:image','twitter:image:src'].includes(property)) mainImageUrl = absoluteUrl(attr(tag, 'content'), finalUrl);
 		if (!canonicalUrl && rel.split(/\s+/).includes('canonical')) canonicalUrl = absoluteUrl(attr(tag, 'href'), finalUrl);
+		if(property.startsWith('og:')){const content=attr(tag,'content');if(content&&!openGraph[property])openGraph[property]=content;}
 	}
 	const jsonLd: unknown[] = [];
 	for (const match of html.matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
 		try { const parsed:unknown = JSON.parse(decodeHtml(match[1]).trim()); Array.isArray(parsed) ? jsonLd.push(...parsed) : jsonLd.push(parsed); } catch { /* malformed publisher data */ }
 	}
-	const text = decodeHtml(html.replace(/<(script|style|noscript|svg|template)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ').replace(/<!--([\s\S]*?)-->/g, ' ').replace(/<\/?(?:p|div|section|article|main|header|footer|aside|li|h[1-6]|br|tr|td|th)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' '))
-		.replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, maxChars);
-	return { title: titleMatch ? decodeHtml(titleMatch[1]).replace(/\s+/g,' ').trim() || null : null, description, canonicalUrl, mainImageUrl, jsonLd, extractedText:text || null };
+	const focused=eventFocusedText(html,maxChars);const uniqueJsonLd=dedupeJsonLd(jsonLd);
+	return { title: titleMatch ? decodeHtml(titleMatch[1]).replace(/\s+/g,' ').trim() || null : null, description, canonicalUrl, mainImageUrl, openGraph, jsonLd:uniqueJsonLd, extractedText:focused.text,originalReadableTextChars:focused.originalChars,extractedTextLength:focused.text?.length??0,textReduced:focused.reduced };
 }
 
-function base(requestedUrl:string, normalizedUrl:string):WebPageIngestionResult { return { requestedUrl,normalizedUrl,finalUrl:null,status:'failed',httpStatus:null,contentType:null,responseBytes:null,redirectCount:0,title:null,description:null,canonicalUrl:null,mainImageUrl:null,jsonLd:[],extractedText:null,errorCode:null,errorMessage:null,fetchedAt:new Date().toISOString() }; }
+function base(requestedUrl:string, normalizedUrl:string):WebPageIngestionResult { return { requestedUrl,normalizedUrl,finalUrl:null,status:'failed',httpStatus:null,contentType:null,responseBytes:null,redirectCount:0,title:null,description:null,canonicalUrl:null,mainImageUrl:null,openGraph:{},jsonLd:[],extractedText:null,originalReadableTextChars:0,extractedTextLength:0,textReduced:false,errorCode:null,errorMessage:null,fetchedAt:new Date().toISOString() }; }
 
 export async function fetchAndExtractWebPage(url:string, options:WebPageFetchOptions):Promise<WebPageIngestionResult> {
 	const normalizedUrl=normalizeWebUrl(url) ?? url; const result=base(url,normalizedUrl);
@@ -126,6 +142,7 @@ export async function fetchAndExtractWebPage(url:string, options:WebPageFetchOpt
 		while(true){const part=await reader.read();if(part.done)break;bytes+=part.value.byteLength;if(bytes>options.maxHtmlBytes){await reader.cancel();return {...result,responseBytes:bytes,status:'failed',errorCode:'response_too_large',errorMessage:'The HTML page exceeds the configured size limit.'};}chunks.push(part.value);}
 		const body=new Uint8Array(bytes);let offset=0;for(const chunk of chunks){body.set(chunk,offset);offset+=chunk.byteLength;}
 		const extracted=extractHtml(new TextDecoder().decode(body),result.finalUrl!,options.maxExtractedTextChars);
+		if(!extracted.title&&!extracted.description&&extracted.jsonLd.length===0&&!extracted.extractedText)return{...result,...extracted,responseBytes:bytes,status:'failed',errorCode:'parser_empty',errorMessage:'The HTML parser could not extract page metadata or readable text.'};
 		return {...result,...extracted,responseBytes:bytes,status:'completed'};
 	} catch(error) { const aborted=controller.signal.aborted; return {...result,status:'failed',errorCode:aborted?'timeout':'fetch_failed',errorMessage:aborted?'The page fetch timed out.':error instanceof Error?error.message:String(error)}; }
 	finally { clearTimeout(timeout); }

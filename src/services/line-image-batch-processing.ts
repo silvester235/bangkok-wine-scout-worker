@@ -14,6 +14,14 @@ import { parseEventDateFromText } from './date-parser';
 
 export interface BatchProcessingMessage { type:'process_batch'; batchId:string; expectedLastReceivedAt:string; closedProcessingToken?:string }
 
+function uniqueJsonValues(values:unknown[],represented:Set<string>):unknown[]{const seen=new Set<string>();const result:unknown[]=[];for(const value of values){if(!value||typeof value!=='object')continue;const compact=Object.fromEntries(Object.entries(value as Record<string,unknown>).filter(([,item])=>typeof item!=='string'||!represented.has(item.trim())));const serialized=JSON.stringify(compact);if(!serialized||serialized==='{}'||seen.has(serialized))continue;seen.add(serialized);if(serialized.length<=2_500)result.push(compact);if(JSON.stringify(result).length>=2_500)break;}return result;}
+
+function buildWebPagePromptSource(web:{finalUrl:string|null;normalizedUrl:string;canonicalUrl:string|null;title:string|null;description:string|null;mainImageUrl:string|null;openGraph:Record<string,string>;jsonLd:unknown[];extractedText:string|null},deterministicDate:string|null):{text:string;reduced:boolean}{
+	const represented=new Set([web.title,web.description,web.canonicalUrl,web.finalUrl??web.normalizedUrl,web.mainImageUrl].filter((value):value is string=>Boolean(value)).map((value)=>value.trim()));const jsonLd=uniqueJsonValues(web.jsonLd,represented);const openGraph=Object.fromEntries(Object.entries(web.openGraph).filter(([,value])=>!represented.has(value.trim())));const readable=web.extractedText?.split('\n').filter((line)=>!represented.has(line.trim())).join('\n').trim()||null;const sections=[`PAGE URL: ${web.finalUrl??web.normalizedUrl}`,web.canonicalUrl&&`CANONICAL URL: ${web.canonicalUrl}`,web.title&&`TITLE: ${web.title}`,web.description&&`META DESCRIPTION: ${web.description}`,web.mainImageUrl&&`MAIN IMAGE URL: ${web.mainImageUrl}`,Object.keys(openGraph).length&&`OPEN GRAPH (NON-DUPLICATE FIELDS):\n${JSON.stringify(openGraph)}`,jsonLd.length&&`JSON-LD (NON-DUPLICATE FIELDS):\n${JSON.stringify(jsonLd)}`,deterministicDate&&`DETERMINISTIC EVENT DATE HINT: ${deterministicDate}`,readable&&`EVENT-FOCUSED READABLE TEXT:\n${readable}`].filter(Boolean) as string[];
+	const seen=new Set<string>();const text=sections.filter((section)=>{const key=section.trim().toLocaleLowerCase('en-US');if(seen.has(key))return false;seen.add(key);return true;}).join('\n\n');
+	return{text:text.slice(0,8_000),reduced:text.length>8_000||jsonLd.length<web.jsonLd.length};
+}
+
 export async function processImageBatch(message:BatchProcessingMessage,env:WorkerEnv):Promise<void> {
 	const current=await getBatch(env.DB,message.batchId);
 	if(!current||(!['collecting','failed'].includes(current.status)&&!(message.closedProcessingToken&&current.status==='processing'))) return;
@@ -55,16 +63,18 @@ export async function processImageBatch(message:BatchProcessingMessage,env:Worke
 			error: ocr.error ?? null,
 			model: ocr.model,
 		});
-		const context={assetId:asset.assetId,intakeId:asset.intakeId,ordinal:asset.ordinal,receivedAt:asset.receivedAt,contentType:asset.contentType,ocrText:ocr.status==='completed'?ocr.text:'',lineText:assetIndex===0?combinedText:null};
+		const context={assetId:asset.assetId,intakeId:asset.intakeId,ordinal:asset.ordinal,receivedAt:asset.receivedAt,contentType:asset.contentType,ocrText:ocr.status==='completed'?ocr.text:'',lineText:null};
 		contexts.push(context);imageContexts.push(context);attributableContexts.push(context);
 		sourceAssets.set(asset.assetId,{intakeId:asset.intakeId,assetId:asset.assetId,sourceType:asset.sourceType??'line_image',sourceMessageId:asset.lineMessageId,isPublic:true,r2ObjectKey:asset.r2ObjectKey,contentType:asset.contentType});
 	}
 	for(const text of texts)sourceAssets.set(text.assetId,{intakeId:`line-text-${text.messageId}`,assetId:text.assetId,sourceType:'line_text',sourceMessageId:text.messageId,textContent:text.text,isPublic:false});
 	for(const web of webSources){
+		const parserEmpty=!web.title&&!web.description&&web.jsonLd.length===0&&!web.extractedText;
+		if(parserEmpty){console.error({event:'line_web_source_parser_failure',batchId:claimed.id,assetId:web.assetId,errorCode:'parser_empty',errorMessage:'No title, description, JSON-LD, or readable text was extracted.'});continue;}
 		const deterministicDate=parseEventDateFromText([web.description,web.extractedText].filter(Boolean).join('\n'),new Date(web.fetchedAt));
 		if(deterministicDate)webPageDates.add(deterministicDate);
-		const structured=web.jsonLd.length?`\nJSON-LD:\n${JSON.stringify(web.jsonLd)}`:'';
-		const webText=[`URL: ${web.finalUrl??web.normalizedUrl}`,web.title&&`TITLE: ${web.title}`,web.description&&`DESCRIPTION: ${web.description}`,deterministicDate&&`DETERMINISTIC EVENT DATE HINT: ${deterministicDate}`,web.extractedText,structured].filter(Boolean).join('\n');
+		const promptSource=buildWebPagePromptSource(web,deterministicDate);const webText=promptSource.text;
+		console.log({event:'line_web_source_prompt_prepared',batchId:claimed.id,assetId:web.assetId,extractedTextLength:web.extractedText?.length??0,promptSize:webText.length,estimatedPromptTokens:Math.ceil(new TextEncoder().encode(webText).byteLength/4),truncationOccurred:promptSource.reduced,textReduced:promptSource.reduced});
 		if(web.status==='completed'&&webText){const context={assetId:web.assetId,intakeId:`line-web-${web.messageId}`,ordinal:web.ordinal,receivedAt:web.receivedAt,contentType:'text/html',ocrText:webText,lineText:null};contexts.push(context);attributableContexts.push(context);}
 		sourceAssets.set(web.assetId,{intakeId:`line-web-${web.messageId}`,assetId:web.assetId,sourceType:'web_page',sourceMessageId:web.messageId,textContent:webText,isPublic:false,contentType:'text/html'});
 	}
