@@ -82,6 +82,14 @@ describe('matchExistingEvent', () => {
 		expect(result.reasons).toContain('different date');
 	});
 
+	it('never matches an otherwise identical event from another year', () => {
+		const result = matchExistingEvent(
+			{ title: 'Italian Wine Dinner at Attico', date: '2026-08-06', startTime: '18:00', venue: 'ATTICO, Radisson Blu Plaza Bangkok' },
+			[{ ...candidates[0], date: '2021-08-06' }],
+		);
+		expect(result).toEqual({ matched: false, eventId: null, confidence: 0, reasons: ['different year'] });
+	});
+
 	it('rejects a similar title at a different venue', () => {
 		const result = matchExistingEvent(
 			{
@@ -112,6 +120,75 @@ describe('matchExistingEvent', () => {
 		expect(result.matched).toBe(false);
 		expect(result.confidence).toBe(0);
 		expect(result.reasons).toContain('different title');
+	});
+
+	it('selects the best match when multiple candidates are plausible', () => {
+		const result = matchExistingEvent(
+			{
+				title: 'Italian Wine Dinner at Attico',
+				date: '2026-07-31',
+				startTime: '18:00',
+				venue: 'ATTICO, Radisson Blu Plaza Bangkok',
+			},
+			[
+				candidates[0],
+				{
+					id: 'event-similar',
+					title: 'Italian Wine Dinner Menu at Attico',
+					date: '2026-07-31',
+					startTime: '18:30',
+					venue: 'Attico Radisson Blu Bangkok',
+				},
+			],
+		);
+
+		expect(result.matched).toBe(true);
+		expect(result.eventId).toBe('event-1');
+	});
+
+	it('matches the same event despite a different start time', () => {
+		const result = matchExistingEvent(
+			{
+				title: 'Italian Wine Dinner at Attico',
+				date: '2026-07-31',
+				startTime: '19:00',
+				venue: 'ATTICO, Radisson Blu Plaza Bangkok',
+			},
+			[candidates[0]],
+		);
+
+		expect(result.matched).toBe(true);
+		expect(result.eventId).toBe('event-1');
+	});
+
+	it('matches the same date and venue with a slightly different title', () => {
+		const result = matchExistingEvent(
+			{
+				title: 'Italian Wine Dinner Attico',
+				date: '2026-07-31',
+				startTime: null,
+				venue: 'ATTICO, Radisson Blu Plaza Bangkok',
+			},
+			[candidates[0]],
+		);
+
+		expect(result.matched).toBe(true);
+		expect(result.eventId).toBe('event-1');
+	});
+
+	it('matches the same date and title with a slightly different venue', () => {
+		const result = matchExistingEvent(
+			{
+				title: 'Italian Wine Dinner at Attico',
+				date: '2026-07-31',
+				startTime: null,
+				venue: 'Attico at Radisson Blu Plaza Bangkok',
+			},
+			[candidates[0]],
+		);
+
+		expect(result.matched).toBe(true);
+		expect(result.eventId).toBe('event-1');
 	});
 
 	it('returns no match when no candidates are supplied', () => {

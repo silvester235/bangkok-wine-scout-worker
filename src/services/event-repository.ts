@@ -365,6 +365,27 @@ export async function saveWineEvent(
 		if (!existing) throw new Error(`Resolved event not found: ${resolvedEventId}`);
 
 		const merge = mergeEventData(existing, { title: input.title, ...input.event });
+		const identityConflictFields = new Set(merge.conflicts.map((conflict) => conflict.field));
+		const normalizedTitle = (value: string | null): string => (value ?? '')
+			.normalize('NFKC')
+			.toLocaleLowerCase('en-US')
+			.replace(/[^\p{L}\p{N}]+/gu, ' ')
+			.trim()
+			.replace(/\s+/g, ' ');
+		const supplementaryTitle = (value: string | null): string => normalizedTitle(value)
+			.split(' ')
+			.filter((token) => token !== 'menu' && token !== 'reminder')
+			.join(' ');
+		const harmlessSupplementaryTitleConflict = (input.assetRole === 'menu' || input.assetRole === 'reminder')
+			&& supplementaryTitle(existing.title) === supplementaryTitle(input.title);
+		const suspiciousAutomaticMatch = identityConflictFields.has('date')
+			|| identityConflictFields.has('venue')
+			|| (identityConflictFields.has('title') && !harmlessSupplementaryTitleConflict);
+		if (suspiciousAutomaticMatch) {
+			const listFields = ['wines', 'wineRegions'] as const;
+			for (const field of listFields) merge.event[field] = existing[field];
+			merge.changedFields = merge.changedFields.filter((field) => !listFields.includes(field as typeof listFields[number]));
+		}
 		const slug = await createUniqueEventSlug(db, {
 			id,
 			title: merge.event.title,

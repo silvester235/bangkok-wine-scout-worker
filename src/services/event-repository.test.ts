@@ -441,6 +441,24 @@ describe('D1 event resolution', () => {
 		});
 	});
 
+	it('does not append list metadata for a suspicious automatic match', async () => {
+		const first = await saveWineEvent(env.DB, input('flyer-1', {
+			event: { wines: ['Château Margaux'] },
+		}));
+
+		const result = await saveWineEvent(env.DB, input('social-1', {
+			assetRole: 'social',
+			title: 'California Wine Masterclass',
+			event: { wines: ['Unrelated Producer Wine'] },
+		}));
+
+		const wines = await env.DB.prepare('SELECT wines_json FROM events WHERE id = ?')
+			.bind(first.id).first<string>('wines_json');
+
+		expect(result).toEqual({ id: first.id, duplicate: true });
+		expect(wines).toBe('["Château Margaux"]');
+	});
+
 	it('does not overwrite conflicting canonical data', async () => {
 		const first = await saveWineEvent(env.DB, input('flyer-1'));
 		await saveWineEvent(env.DB, input('menu-1', {
