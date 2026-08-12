@@ -18,7 +18,9 @@ export interface EventMergeResult {
 	conflicts: EventMergeConflict[];
 }
 
-type StringField = 'title' | 'date' | 'startTime' | 'venue' | 'contactEmail' | 'contactPhone';
+type StringField = 'title' | 'date' | 'startTime' | 'venue' | 'contactEmail' | 'contactPhone'
+	| 'organizer' | 'address' | 'district' | 'websiteUrl' | 'bookingUrl' | 'bookingInstructions'
+	| 'contactText' | 'description' | 'priceText' | 'currency' | 'priceQualifier' | 'endTime' | 'timezone';
 
 function displayString(value: string | null | undefined): string | null {
 	if (value === null || value === undefined) return null;
@@ -54,7 +56,8 @@ function mergeString(
 	return existingValue;
 }
 
-function mergePrice(
+function mergeNumber(
+	field: 'priceTHB' | 'courseCount',
 	existingValue: number | null,
 	incomingValue: number | null | undefined,
 	conflicts: EventMergeConflict[],
@@ -62,7 +65,7 @@ function mergePrice(
 	if (existingValue === null) return incomingValue ?? null;
 	if (incomingValue === null || incomingValue === undefined || incomingValue === existingValue) return existingValue;
 
-	conflicts.push({ field: 'priceTHB', existingValue, incomingValue });
+	conflicts.push({ field, existingValue, incomingValue });
 	return existingValue;
 }
 
@@ -95,7 +98,7 @@ export function mergeEventData(
 		title: mergeString('title', existing.title, incoming.title, conflicts),
 		date: mergeString('date', existing.date, incoming.date, conflicts),
 		startTime: mergeString('startTime', existing.startTime, incoming.startTime, conflicts),
-		priceTHB: mergePrice(existing.priceTHB, incoming.priceTHB, conflicts),
+		priceTHB: mergeNumber('priceTHB', existing.priceTHB, incoming.priceTHB, conflicts),
 		venue: mergeString('venue', existing.venue, incoming.venue, conflicts),
 		contactEmail: mergeString('contactEmail', existing.contactEmail, incoming.contactEmail, conflicts),
 		contactPhone: mergeString('contactPhone', existing.contactPhone, incoming.contactPhone, conflicts),
@@ -103,6 +106,14 @@ export function mergeEventData(
 		wineRegions: mergeStableUnion(existing.wineRegions, incoming.wineRegions),
 		isWineEvent: existing.isWineEvent || incoming.isWineEvent === true,
 	};
+	const mutable = event as unknown as Record<string, unknown>;
+	for (const field of ['organizer','address','district','websiteUrl','bookingUrl','bookingInstructions','contactText','description','priceText','currency','priceQualifier','endTime','timezone'] as const) {
+		if (existing[field] !== undefined || incoming[field] !== undefined) mutable[field] = mergeString(field, existing[field] ?? null, incoming[field], conflicts);
+	}
+	if (existing.courseCount !== undefined || incoming.courseCount !== undefined) mutable.courseCount = mergeNumber('courseCount', existing.courseCount ?? null, incoming.courseCount, conflicts);
+	for (const field of ['wineProducers','partners','merchants','menu','notes','sourceContactInformation'] as const) {
+		if (existing[field] !== undefined || incoming[field] !== undefined) mutable[field] = mergeStableUnion(existing[field] ?? [], incoming[field]);
+	}
 
 	const changedFields = (Object.keys(event) as CanonicalEventField[]).filter((field) => {
 		const before = existing[field];

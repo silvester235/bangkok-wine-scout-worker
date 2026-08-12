@@ -3,6 +3,15 @@ export interface LineMessageContent {
 	contentType: string;
 }
 
+export class LineContentDownloadError extends Error {
+	readonly retryable:boolean;
+	constructor(readonly status:number){
+		super(`line_content_${status===404||status===410?'unavailable':'download_failed'}_http_${status}`);
+		this.name='LineContentDownloadError';
+		this.retryable=status===408||status===409||status===425||status===429||status>=500;
+	}
+}
+
 export async function downloadLineMessageContent(
 	messageId: string,
 	accessToken: string,
@@ -17,10 +26,8 @@ export async function downloadLineMessageContent(
 	);
 
 	if (!response.ok) {
-		const errorBody = await response.text();
-		throw new Error(
-			`LINE Content API failed: ${response.status} ${errorBody}`,
-		);
+		await response.body?.cancel().catch(()=>undefined);
+		throw new LineContentDownloadError(response.status);
 	}
 
 	return {

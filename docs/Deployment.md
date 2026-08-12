@@ -102,11 +102,15 @@ Use Cloudflare deployment history to restore a known working version. Code chang
 - Update documentation when bindings, routes, or secrets change.
 # LINE message batching
 
-Set `LINE_MESSAGE_BATCH_WINDOW_SECONDS` to a positive integer no greater than
-86400. The default and recommended value is `60`. The deprecated
-`LINE_IMAGE_BATCH_WINDOW_SECONDS` is read only when the new setting is absent.
+Set `LINE_MESSAGE_BATCH_WINDOW_SECONDS` and `LINE_IMAGE_BATCH_WINDOW_SECONDS` to
+positive integers no greater than 86400. Text/web intake uses the message window
+(default `60`); image placeholder registration and its first automatic close use
+the image window (default `15`). A later related message can extend the shared
+batch using its own configured window.
 Queue producers must support per-message `delaySeconds`; no additional queue is
-required. Apply `0007_line_image_batches.sql`, `0008_line_message_batch_texts.sql`,
+required. Asset completion also ensures an expiration or current-token
+continuation job, so a lost or early delayed check cannot strand the batch. Apply
+`0007_line_image_batches.sql`, `0008_line_message_batch_texts.sql`,
 and `0009_batch_lifecycle.sql` before deploying the Worker. `/done` uses the
 same queue but closes and dispatches the batch immediately. If bindings change, run
 `npx wrangler types` as required by the project workflow.

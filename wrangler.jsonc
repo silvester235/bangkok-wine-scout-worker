@@ -14,20 +14,37 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
+	"triggers": {
+		"crons": ["*/2 * * * *"]
+	},
 	"ai": {
 		"binding": "AI"
 	},
 	"vars": {
 		"AI_PROVIDER": "workers_ai",
 		"AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+		"EDITORIAL_VISION_MODEL": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+		"CLOUDFLARE_ACCOUNT_ID": "5043abe3e62c4f0f4beed6b298a238f1",
 		"HIGH_THRESHOLD": "0.85",
 		"LOW_THRESHOLD": "0.45",
 		"AI_TIMEOUT_MS": "5000",
 		"LINE_TEXT_CONTEXT_WINDOW_SECONDS": "600",
 		"LINE_IMAGE_BATCH_WINDOW_SECONDS": "15",
 		"LINE_MESSAGE_BATCH_WINDOW_SECONDS": "60",
-		"PUBLIC_SITE_ORIGIN": "https://bangkokwinescout.com"
+		"AGENT_SUBMISSION_WINDOW_SECONDS": "60",
+		"AGENT_DONE_SETTLEMENT_SECONDS": "3",
+		"PUBLIC_SITE_ORIGIN": "https://bangkokwinescout.com",
+		"ENABLE_PUBLIC_EVENT_PAGES": "true",
+		"INGESTION_MODE": "v2",
+		"V2_PUBLICATION_ENABLED": "true"
 	},
+	"workflows": [
+		{
+			"binding": "WINE_SCOUT_SUBMISSION_WORKFLOW",
+			"name": "bangkok-wine-scout-submission-v2",
+			"class_name": "WineScoutSubmissionWorkflow"
+		}
+	],
 	"queues": {
 		"producers": [
 			{

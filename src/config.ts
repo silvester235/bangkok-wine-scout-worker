@@ -3,9 +3,12 @@ import type { AiEventResolutionOptions } from './services/event-repository';
 
 export const APP_NAME = 'Bangkok Wine Scout';
 export const VERSION = '0.7.0';
+export const PUBLIC_CANONICAL_ORIGIN = 'https://bangkokwinescout.com';
 const DEFAULT_LINE_TEXT_CONTEXT_WINDOW_SECONDS = 600;
 const DEFAULT_LINE_IMAGE_BATCH_WINDOW_SECONDS = 15;
 const DEFAULT_LINE_MESSAGE_BATCH_WINDOW_SECONDS = 60;
+const DEFAULT_AGENT_SUBMISSION_WINDOW_SECONDS = 60;
+const DEFAULT_AGENT_DONE_SETTLEMENT_SECONDS = 3;
 
 function parseNumber(value: string, name: string): number {
 	const parsed = Number(value);
@@ -89,3 +92,6 @@ export function getLineMessageBatchWindowSeconds(env: WorkerEnv): number {
 	if (!Number.isInteger(seconds) || seconds <= 0 || seconds > 86400) throw new Error('LINE_MESSAGE_BATCH_WINDOW_SECONDS must be an integer from 1 to 86400.');
 	return seconds;
 }
+
+export function getAgentSubmissionWindowSeconds(env:WorkerEnv):number{const value=env.AGENT_SUBMISSION_WINDOW_SECONDS?.trim();if(!value)return DEFAULT_AGENT_SUBMISSION_WINDOW_SECONDS;const seconds=Number(value);if(!Number.isInteger(seconds)||seconds<=0||seconds>86400)throw new Error('AGENT_SUBMISSION_WINDOW_SECONDS must be an integer from 1 to 86400.');return seconds;}
+export function getAgentDoneSettlementSeconds(env:WorkerEnv):number{const value=env.AGENT_DONE_SETTLEMENT_SECONDS?.trim();if(!value)return DEFAULT_AGENT_DONE_SETTLEMENT_SECONDS;const seconds=Number(value);if(!Number.isInteger(seconds)||seconds<1||seconds>60)throw new Error('AGENT_DONE_SETTLEMENT_SECONDS must be an integer from 1 to 60.');return seconds;}

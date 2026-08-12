@@ -30,10 +30,30 @@ export interface PublicEventSummary {
 	title: string | null;
 	date: string | null;
 	startTime: string | null;
+	endTime: string | null;
+	timezone: string | null;
 	priceTHB: number | null;
+	priceText: string | null;
+	currency: string | null;
+	priceQualifier: string | null;
 	venue: string | null;
+	organizer: string | null;
+	address: string | null;
+	district: string | null;
+	websiteUrl: string | null;
+	bookingUrl: string | null;
+	bookingInstructions: string | null;
+	contactText: string | null;
+	description: string | null;
+	courseCount: number | null;
 	wines: string[];
 	wineRegions: string[];
+	wineProducers: string[];
+	partners: string[];
+	merchants: string[];
+	menu: string[];
+	notes: string[];
+	sourceContactInformation: string[];
 	isWineEvent: boolean;
 	heroAsset: PublicAssetSummary | null;
 	publishedAt: string;
@@ -51,12 +71,32 @@ interface PublicEventRow {
 	title: string | null;
 	event_date: string | null;
 	start_time: string | null;
+	end_time: string | null;
+	timezone: string | null;
 	price_thb: number | null;
+	price_text: string | null;
+	currency: string | null;
+	price_qualifier: string | null;
 	venue: string | null;
+	organizer: string | null;
+	address: string | null;
+	district: string | null;
+	website_url: string | null;
+	booking_url: string | null;
+	booking_instructions: string | null;
+	contact_text: string | null;
+	description: string | null;
+	course_count: number | null;
 	contact_email: string | null;
 	contact_phone: string | null;
 	wines_json: string;
 	wine_regions_json: string;
+	wine_producers_json: string;
+	partners_json: string;
+	merchants_json: string;
+	menu_json: string;
+	notes_json: string;
+	source_contact_json: string;
 	is_wine_event: number;
 	published_at: string;
 	hero_asset_id: string | null;
@@ -113,10 +153,30 @@ function mapEvent(row: PublicEventRow): PublicEventSummary {
 		title: row.title,
 		date: row.event_date,
 		startTime: row.start_time,
+		endTime: row.end_time,
+		timezone: row.timezone,
 		priceTHB: row.price_thb,
+		priceText: row.price_text,
+		currency: row.currency,
+		priceQualifier: row.price_qualifier,
 		venue: row.venue,
+		organizer: row.organizer,
+		address: row.address,
+		district: row.district,
+		websiteUrl: row.website_url,
+		bookingUrl: row.booking_url,
+		bookingInstructions: row.booking_instructions,
+		contactText: row.contact_text,
+		description: row.description,
+		courseCount: row.course_count,
 		wines: parseStringArray(row.wines_json),
 		wineRegions: parseStringArray(row.wine_regions_json),
+		wineProducers: parseStringArray(row.wine_producers_json),
+		partners: parseStringArray(row.partners_json),
+		merchants: parseStringArray(row.merchants_json),
+		menu: parseStringArray(row.menu_json),
+		notes: parseStringArray(row.notes_json),
+		sourceContactInformation: parseStringArray(row.source_contact_json),
 		isWineEvent: row.is_wine_event === 1,
 		heroAsset,
 		publishedAt: row.published_at,
@@ -134,12 +194,32 @@ const PUBLIC_EVENT_COLUMNS = `
 	e.title,
 	e.event_date,
 	e.start_time,
+	e.end_time,
+	e.timezone,
 	e.price_thb,
+	e.price_text,
+	e.currency,
+	e.price_qualifier,
 	e.venue,
+	e.organizer,
+	e.address,
+	e.district,
+	e.website_url,
+	e.booking_url,
+	e.booking_instructions,
+	e.contact_text,
+	e.description,
+	e.course_count,
 	e.contact_email,
 	e.contact_phone,
 	e.wines_json,
 	e.wine_regions_json,
+	e.wine_producers_json,
+	e.partners_json,
+	e.merchants_json,
+	e.menu_json,
+	e.notes_json,
+	e.source_contact_json,
 	e.is_wine_event,
 	e.published_at,
 	(SELECT ea.asset_id FROM event_assets ea
@@ -179,8 +259,8 @@ export async function listPublishedEvents(
 	const bindings: Array<string | number | null> = [];
 	if (options.from) {
 		conditions.push('e.event_date >= ?');
-		bindings.push(!options.includePast && options.from < options.todayBangkok ? options.todayBangkok : options.from);
-	} else if (!options.includePast) {
+		bindings.push(options.from);
+	} else if (!options.to && !options.includePast) {
 		conditions.push('(e.event_date IS NULL OR e.event_date >= ?)');
 		bindings.push(options.todayBangkok);
 	}
@@ -253,6 +333,16 @@ export async function getPublishedEventBySlug(db: D1Database, slug: string): Pro
 	).bind(slug).first<PublicEventRow>();
 	if (!row) return null;
 	return { ...mapEvent(row), contactEmail: row.contact_email, contactPhone: row.contact_phone, assets: await listPublicEventAssets(db, row.id, row.title) };
+}
+
+export async function listPublishedEventSlugs(db: D1Database): Promise<string[]> {
+	const result = await db.prepare(
+		`SELECT e.slug
+		FROM events e
+		WHERE ${PUBLIC_EVENT_CONDITION}
+		ORDER BY e.slug`,
+	).all<{ slug: string }>();
+	return (result.results ?? []).map((row) => row.slug);
 }
 
 export async function listPublicEventAssets(

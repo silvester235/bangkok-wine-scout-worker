@@ -48,6 +48,20 @@ describe('context-aware event extraction', () => {
 		expect(result.event?.date).toBe('2026-08-15');
 	});
 
+	it('replaces an invented fallback year using yearless flyer OCR and the processing context', async () => {
+		const { ai, bucket } = dependencies({ ...baseEvent, date: '2021-08-06' });
+		const result = await extractAndStoreEvent(ai, bucket, {
+			intakeId: 'intake-1', assetId: 'image-1',
+			context: buildEventExtractionContext({ ocrText: 'Thursday August 6' }),
+			referenceDate: new Date('2026-08-03T12:00:00+07:00'),
+		});
+		expect(result.event?.date).toBe('2026-08-06');
+	});
+
+	it('drops a model-supplied historical date when source text contains no date evidence',async()=>{const {ai,bucket}=dependencies({...baseEvent,date:'2021-08-06'});const result=await extractAndStoreEvent(ai,bucket,{intakeId:'intake-1',assetId:'image-1',context:buildEventExtractionContext({ocrText:'Wine dinner at 7 PM'}),referenceDate:new Date('2026-08-03T12:00:00+07:00')});expect(result.event?.date).toBeNull();});
+
+	it('preserves an explicitly printed historical year',async()=>{const {ai,bucket}=dependencies({...baseEvent,date:'2026-08-06'});const result=await extractAndStoreEvent(ai,bucket,{intakeId:'intake-1',assetId:'image-1',context:buildEventExtractionContext({ocrText:'Wine dinner August 6 2021'}),referenceDate:new Date('2026-08-03T12:00:00+07:00')});expect(result.event?.date).toBe('2021-08-06');});
+
 	it('passes LINE-only price and wine evidence through extraction and normalization', async () => {
 		const event = {
 			...baseEvent,

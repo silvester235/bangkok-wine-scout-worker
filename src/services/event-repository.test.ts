@@ -33,6 +33,12 @@ const schema = `
 		wines_json TEXT NOT NULL DEFAULT '[]',
 		wine_regions_json TEXT NOT NULL DEFAULT '[]',
 		is_wine_event INTEGER NOT NULL DEFAULT 0,
+		organizer TEXT, address TEXT, district TEXT, website_url TEXT, booking_url TEXT,
+		booking_instructions TEXT, contact_text TEXT, description TEXT, course_count INTEGER,
+		price_text TEXT, currency TEXT, price_qualifier TEXT, end_time TEXT, timezone TEXT,
+		wine_producers_json TEXT NOT NULL DEFAULT '[]', partners_json TEXT NOT NULL DEFAULT '[]',
+		merchants_json TEXT NOT NULL DEFAULT '[]', menu_json TEXT NOT NULL DEFAULT '[]',
+		notes_json TEXT NOT NULL DEFAULT '[]', source_contact_json TEXT NOT NULL DEFAULT '[]', updated_at TEXT,
 		status TEXT NOT NULL DEFAULT 'draft',
 		published_at TEXT,
 		slug TEXT,
@@ -377,7 +383,7 @@ describe('D1 event resolution', () => {
 		}));
 
 		await saveWineEvent(env.DB, input('flyer-2', {
-			title: '',
+			title: 'California Wine Dinner',
 			event: {
 				priceTHB: 3200,
 				venue: null,
@@ -439,6 +445,24 @@ describe('D1 event resolution', () => {
 			wines_json: '["Château Margaux","Cloudy Bay","Penfolds Bin 389"]',
 			wine_regions_json: '["Bordeaux","Napa Valley"]',
 		});
+	});
+
+	it('does not append list metadata for a suspicious automatic match', async () => {
+		const first = await saveWineEvent(env.DB, input('flyer-1', {
+			event: { wines: ['Château Margaux'] },
+		}));
+
+		const result = await saveWineEvent(env.DB, input('social-1', {
+			assetRole: 'social',
+			title: 'California Wine Masterclass',
+			event: { wines: ['Unrelated Producer Wine'] },
+		}));
+
+		const wines = await env.DB.prepare('SELECT wines_json FROM events WHERE id = ?')
+			.bind(first.id).first<string>('wines_json');
+
+		expect(result).toEqual({ id: first.id, duplicate: true });
+		expect(wines).toBe('["Château Margaux"]');
 	});
 
 	it('does not overwrite conflicting canonical data', async () => {
@@ -538,6 +562,53 @@ describe('D1 event resolution', () => {
 			is_public: 1,
 		});
 		expect(row?.published_at).not.toBeNull();
+	});
+
+	it('does not match a sparse fallback flyer to an unrelated published event', async () => {
+		const existing = await saveWineEvent(env.DB, input('existing-complete'));
+		const sparse = await saveWineEvent(env.DB, input('sparse-flyer', {
+			title: 'Wine Event',
+			isPublic: true,
+			r2ObjectKey: 'intakes/sparse/assets/flyer/original',
+			contentType: 'image/jpeg',
+			event: {
+				date: null, startTime: null, priceTHB: null, venue: null,
+				contactEmail: null, contactPhone: null, wines: [], wineRegions: [], isWineEvent: true,
+			},
+		}));
+
+		expect(sparse).toEqual({ id: 'intake-sparse-flyer:sparse-flyer', duplicate: false });
+		expect(sparse.id).not.toBe(existing.id);
+		expect((await env.DB.prepare('SELECT COUNT(*) AS count FROM events').first<{count:number}>())?.count).toBe(2);
+	});
+
+	it('does not match a generic fallback using only a shared date and time', async () => {
+		const existing = await saveWineEvent(env.DB, input('existing-date-time'));
+		const sparse = await saveWineEvent(env.DB, input('generic-date-time', {
+			title: 'Wine Event',
+			event: { venue: null },
+		}));
+
+		expect(sparse.id).not.toBe(existing.id);
+		expect((await env.DB.prepare('SELECT COUNT(*) AS count FROM events').first<{count:number}>())?.count).toBe(2);
+	});
+
+	it('generates stable unique slugs for multiple generic fallback events', async () => {
+		const sparseEvent = {
+			date: null, startTime: null, priceTHB: null, venue: null,
+			contactEmail: null, contactPhone: null, wines: [], wineRegions: [], isWineEvent: true,
+		};
+		const first = await saveWineEvent(env.DB, input('fallback-one', { title: 'Wine Event', event: sparseEvent }));
+		const second = await saveWineEvent(env.DB, input('fallback-two', { title: 'Wine Event', event: sparseEvent }));
+		const rows = await env.DB.prepare('SELECT id, slug FROM events ORDER BY id').all<{id:string;slug:string}>();
+
+		expect(first.duplicate).toBe(false);
+		expect(second.duplicate).toBe(false);
+		expect(rows.results.map((row)=>row.slug)).toContain('wine-event');
+		expect(rows.results.find((row)=>row.id===second.id)?.slug).toMatch(/^wine-event-[a-z0-9]+$/);
+		const retry = await saveWineEvent(env.DB, input('fallback-two', { title: 'Wine Event', event: sparseEvent }));
+		expect(retry.id).toBe(second.id);
+		expect(await env.DB.prepare('SELECT slug FROM events WHERE id=?').bind(second.id).first<string>('slug')).toBe(rows.results.find((row)=>row.id===second.id)?.slug);
 	});
 
 	it('keeps a published event published when enrichment changes a public field', async () => {
@@ -814,5 +885,34 @@ describe('AI-assisted event resolution', () => {
 			expect.stringContaining('error'),
 		);
 		configError.mockRestore();
+	});
+});
+
+describe('asset-first rich enrichment', () => {
+	it('uses a caller-owned batch event id for shell creation and sparse retries',async()=>{const eventId='line-batch:batch-1';const created=await saveWineEvent(env.DB,{...input('batch-anchor',{title:'Batch Wine Dinner'}),eventId});const retried=await saveWineEvent(env.DB,{...input('batch-support',{title:null,event:{date:null,startTime:null,priceTHB:null,venue:null,contactEmail:null,contactPhone:null,wines:[],wineRegions:[],isWineEvent:true}}),eventId});expect(created.id).toBe(eventId);expect(retried.id).toBe(eventId);expect(await env.DB.prepare('SELECT COUNT(*) count FROM events').first<{count:number}>()).toEqual({count:1});expect(await env.DB.prepare('SELECT title FROM events WHERE id=?').bind(eventId).first<{title:string}>()).toEqual({title:'Batch Wine Dinner'});});
+	it('enriches the same Chez Papa shell without creating a duplicate or clearing rich fields on retry', async () => {
+		const shell = input('chez-papa', { title: 'Wine Event', event: {
+			date: null, startTime: null, priceTHB: null, venue: null, contactEmail: null, contactPhone: null,
+			wines: [], wineRegions: [], isWineEvent: true,
+		} });
+		const created = await saveWineEvent(env.DB, shell);
+		const enriched = await saveWineEvent(env.DB, input('chez-papa', { title: 'Wine Pairing Dinner', event: {
+			date: '2026-08-26', startTime: '18:00', priceTHB: 1490, venue: 'Chez Papa Bangkok',
+			organizer: 'Chez Papa French Bistro', address: 'Chez Papa Bangkok – Sukhumvit 51', district: 'Sukhumvit 51',
+			websiteUrl: 'https://chezpapabangkok.carrd.co/', bookingInstructions: 'Book your table',
+			contactPhone: '063 832 3605', description: '5 Courses Wine Pairing Experience', courseCount: 5,
+			priceText: 'THB 1,490++', currency: 'THB', priceQualifier: '++', wineProducers: ['Chapoutier'], merchants: ['Vinum Lector'],
+		} }));
+		await saveWineEvent(env.DB, input('chez-papa', { title: null, event: {
+			date: null, startTime: null, priceTHB: null, venue: null, contactEmail: null, contactPhone: null,
+			wines: [], wineRegions: [], isWineEvent: true,
+		} }));
+
+		const row = await env.DB.prepare('SELECT *, (SELECT COUNT(*) FROM events) AS total FROM events WHERE id=?').bind(created.id).first<Record<string, unknown>>();
+		expect(enriched.id).toBe(created.id);
+		expect(row).toEqual(expect.objectContaining({ total: 1, title: 'Wine Pairing Dinner', organizer: 'Chez Papa French Bistro',
+			address: 'Chez Papa Bangkok – Sukhumvit 51', website_url: 'https://chezpapabangkok.carrd.co/', contact_phone: '063 832 3605',
+			course_count: 5, price_text: 'THB 1,490++', price_qualifier: '++', wine_producers_json: '["Chapoutier"]', merchants_json: '["Vinum Lector"]' }));
+		expect(String(row?.slug)).not.toBe('wine-event');
 	});
 });

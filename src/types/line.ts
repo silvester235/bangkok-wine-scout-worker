@@ -26,6 +26,7 @@ export interface LineImageMessageEvent {
 	message: {
 		id: string;
 		type: 'image';
+		imageSet?: {id:string;index?:number;total?:number};
 		contentProvider?: {
 			type: 'line' | 'external';
 			originalContentUrl?: string;
