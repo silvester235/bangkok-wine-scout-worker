@@ -41,6 +41,15 @@ function isImageMessageEvent(event: unknown): event is LineImageMessageEvent {
 	return candidate?.type === 'message' && candidate.message?.type === 'image' && typeof candidate.message.id === 'string' && typeof candidate.replyToken === 'string';
 }
 
+function isPdfFileMessageEvent(event: unknown): event is { type: 'message'; replyToken: string; message: { id: string; type: 'file'; fileName?: string } } {
+	const candidate = event as { type?: unknown; replyToken?: unknown; message?: { id?: unknown; type?: unknown; fileName?: unknown } };
+	return candidate?.type === 'message'
+		&& candidate.message?.type === 'file'
+		&& typeof candidate.message.id === 'string'
+		&& typeof candidate.replyToken === 'string'
+		&& (typeof candidate.message.fileName !== 'string' || candidate.message.fileName.toLowerCase().endsWith('.pdf'));
+}
+
 function getPushTarget(event: LineImageMessageEvent): string | undefined {
 	return event.source?.userId ?? event.source?.groupId ?? event.source?.roomId;
 }
@@ -84,6 +93,13 @@ async function acknowledgeAndQueueImage(event: LineImageMessageEvent, env: Worke
 export async function processWebhookEvents(body: LineWebhookPayload, env: WorkerEnv): Promise<void> {
 	for (const event of body.events ?? []) {
 		if (isImageMessageEvent(event)) await acknowledgeAndQueueImage(event, env);
+		else if (isPdfFileMessageEvent(event)) {
+			await replyToLine(
+				event.replyToken,
+				'PDF files aren’t supported yet. Please send the flyer pages as images instead. You can send multiple images — Bangkok Wine Scout will process them together as one event.',
+				env.LINE_CHANNEL_ACCESS_TOKEN,
+			);
+		}
 		else if (isTextMessageEvent(event)) {
 			const conversationKey = buildLineConversationKey(event.source);
 			if (event.message.text.trim().toLowerCase() === '/done') {
