@@ -350,47 +350,90 @@ Provides read-only published event lists, slug-based detail, asset summaries, an
 - Bottle recognition and cellar management are outside the current scope.
 # LINE message-batch ingestion
 
+LINE ingestion uses two durable phases. Phase A claims a content-free delivery
+receipt, registers the asset, preserves the original image in R2, and establishes
+the batch-owned minimal event shell. Phase B closes the bounded collection window
+and enriches that same event. OCR, QR, parsing, AI, matching, and notification are
+best-effort enrichment and cannot revoke the retained source or shell.
+
+`line_webhook_delivery_receipts` uses the webhook event ID (or message type plus
+message ID fallback) to suppress repeated image, text, command, and `/done`
+deliveries. Conversation correlation is stored as a SHA-256 hash; message content,
+reply tokens, access tokens, and extracted contact data are not stored. An atomic
+`acknowledgement_claimed_at` update gives one delivery exclusive ownership of its
+LINE reply. Duplicate delivery returns success without another reply or queue job.
+
 Non-command LINE text and image messages are grouped by conversation in durable D1
-`line_image_batches` records. The preferred inactivity window is configured by
-`LINE_MESSAGE_BATCH_WINDOW_SECONDS` and defaults to 60 seconds; the deprecated
-image-only setting remains a compatibility fallback. `/done` atomically closes the
-current collecting batch and queues it immediately. Messages received after that
-close belong to a new batch.
+`line_image_batches` records. Image registration uses
+`LINE_IMAGE_BATCH_WINDOW_SECONDS` (15 seconds by default), while text and web
+registration use `LINE_MESSAGE_BATCH_WINDOW_SECONDS` (60 seconds by default).
+Each accepted message updates the shared batch expiry. `/done` atomically closes
+the current collecting batch and queues it immediately. Messages received after
+that close belong to a new batch.
 
 Each original image remains a separate R2 asset with one
 `line_image_batch_assets` row. Each text message has an immutable
 `line_message_batch_texts` row and a private source asset. Batch analysis receives
 labeled image and text boundaries, ordering, timestamps, OCR, and content.
 
-One LINE message batch represents at most one event. Batch analysis must combine
+One LINE message batch represents at most one event. `minimal_event_id` and
+`shell_anchor_asset_id` make the batch the exclusive ownership boundary: one
+anchor creates the deterministic shell and every other source is linked to it.
+Retries and final enrichment force the same event ID and cannot run an independent
+event-creation path. Batch analysis must combine
 compatible evidence into zero or one canonical candidate. If it proposes multiple
-events, processing deterministically rejects the result for review and publishes
-none; it never splits ownership or publishes several events from one batch.
+events, processing falls back to per-asset enrichment, selects the strongest flyer,
+and publishes one event with all batch images; it never splits ownership or
+publishes several events from one batch.
 The operator workflow is to send all material for Event A, wait for completion or
 send `/done`, and only then begin sending Event B.
 
 Every candidate still passes through D1 candidate lookup, the deterministic Event
-Matcher, optional AI resolution, and Event Merger. A code-level publication guard
-requires a meaningful non-fallback title, a date, and corroborating event metadata.
-Menu/wine text alone is never publishable. Ambiguous or rejected batches remain
-stored with OCR and batch-analysis artifacts and become `needs_review`.
+Matcher, optional AI resolution, and Event Merger. The publication guard records
+missing title, date, and corroborating metadata as extraction warnings only. A
+stored LINE flyer is publishable even when it is unreadable or menu-like. Sparse
+identity evidence disables matching so the intake creates a new event instead of
+updating an unrelated one. Deterministic suspicious historical dates or conflicting
+source dates may still mark the published batch `needs_review`.
 
 If batch AI output is malformed, schema-invalid, contains no events, or assigns no
 assets, the processor records the raw response and validation diagnostics and runs
-the established single-asset extractor. A recovered result is still reduced to at
-most one candidate. Menu-only fallback results remain unpublished; evidence for
-multiple events in one user batch requires review.
+the established single-asset extractor. Complementary fallback fields fill gaps;
+they do not replace the richer batch candidate. Arrays are stable unions and
+conflicting scalar values emit `candidate_conflict`. Contextual deterministic
+parsers have lower precedence, fill only missing fields, retain raw price wording,
+and return a warning instead of guessing when prices or websites are ambiguous.
+Years, times, course counts, and phone-like digit strings are not accepted as
+uncontextual prices.
 
-After a single candidate passes the unchanged publication guard, every image in the
+After a candidate receives warning-only metadata evaluation, every image in the
 batch is linked to that event. AI assignments are role hints, not ownership truth.
 The deterministic main image is selected from an explicit `main` hint, otherwise
 the strongest identity-bearing image, otherwise the first image. Menu-like evidence
 is assigned `menu`; uncertain supplementary images use `other`. Text source assets
 are linked privately for provenance. A successful batch therefore has no unassigned
-assets and no review suffix in its completion summary.
+assets. A sparse publication receives a successful completion summary with an
+extraction-warning sentence, not a rejection message.
 
 Queue delivery is treated as at-least-once. LINE message IDs, asset IDs, and batch
 associations are unique. Asset linking is an upsert. Only one consumer can change a
 batch from `collecting` to `processing`; a stale delayed message cannot claim it.
 Once claimed, the batch is closed and a later image starts a new collecting batch.
+The initial delayed expiration job is reinforced when each asset completes. If the
+batch is still collecting, completion schedules a check for the exact remaining
+expiry interval; if it is already processing behind a pending-asset gate,
+completion schedules a continuation with the current CAS token. Duplicate or stale
+jobs lose the CAS and cannot publish twice.
 Completion and the summary-notification marker are compare-and-set operations.
+Asset claims can resume `failed` work and reclaim a stale processing lease; the
+persisted attempt counter makes retry history observable. Batch retries stop after
+four claims. Valid forward transitions are `collecting -> processing -> completed`
+or `needs_review`, with `processing -> failed -> processing` available only within
+that bound. Terminal batches never regress to collecting. `/done` and timeout race
+on the same compare-and-set transition, so only one queues active processing.
+
+Reply and push failures emit `notification_failed` and do not alter event, asset,
+or batch state. Reconciliation starts from `retryable_failed` delivery receipts,
+failed/stale asset claims, failed batches below the retry bound, and R2 publication
+diagnostics whose D1 shell write is marked retryable. Operators requeue the exact
+batch/event; they do not create a replacement event.

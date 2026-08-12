@@ -34,12 +34,12 @@ export function buildEventSlugBase(input: {
 
 export async function createUniqueEventSlug(
 	db: D1Database,
-	input: { id: string; title: string | null; venue: string | null; date: string | null },
+	input: { id: string; title: string | null; venue: string | null; date: string | null; replaceGeneric?: boolean },
 ): Promise<string> {
 	const existing = await db.prepare('SELECT slug FROM events WHERE id = ? LIMIT 1')
 		.bind(input.id)
 		.first<{ slug: string | null }>();
-	if (existing?.slug) return existing.slug;
+	if (existing?.slug && !(input.replaceGeneric && /^(?:wine-event|event|untitled)(?:-|$)/.test(existing.slug))) return existing.slug;
 
 	const base = buildEventSlugBase(input);
 	const collision = await db.prepare('SELECT id FROM events WHERE slug = ? LIMIT 1')

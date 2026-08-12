@@ -61,6 +61,9 @@ function scoreCandidate(incoming: MatchableEvent, candidate: ExistingEventCandid
 
 	if (incoming.date && candidate.date) {
 		available += 0.4;
+		if (incoming.date.slice(0, 4) !== candidate.date.slice(0, 4)) {
+			return { eventId: candidate.id, confidence: 0, reasons: ['different year'], positiveSignals: 0 };
+		}
 		if (incoming.date === candidate.date) {
 			earned += 0.4;
 			positiveSignals += 1;

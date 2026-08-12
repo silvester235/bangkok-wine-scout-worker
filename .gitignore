@@ -165,3 +165,9 @@ dist
 .env*
 !.env.example
 .wrangler/
+
+# Production database exports
+backups/d1/
+
+.DS_Store
+tmp/

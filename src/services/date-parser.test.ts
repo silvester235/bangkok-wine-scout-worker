@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseEventDate, parseEventDateFromText } from './date-parser';
+import { parseEventDate, parseEventDateEvidenceFromText, parseEventDateFromText } from './date-parser';
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -57,6 +57,19 @@ describe('parseEventDate', () => {
 
 		expect(parseEventDateFromText('WINE MASTERCLASS\nFriday 31st July\n6 PM')).toBe('2026-07-31');
 	});
+
+	it('infers Thursday August 6 from the 2026 processing context', () => {
+		expect(parseEventDateFromText('Thursday August 6', new Date('2026-08-03T12:00:00+07:00'))).toBe('2026-08-06');
+	});
+
+	it.each([
+		['2026-12-30T12:00:00+07:00', 'January 2', '2027-01-02'],
+		['2026-01-02T12:00:00+07:00', 'December 31', '2026-12-31'],
+	])('infers yearless dates around New Year from %s', (reference, input, expected) => {
+		expect(parseEventDate(input, new Date(reference))).toBe(expected);
+	});
+
+	it('distinguishes explicit years from inferred upcoming years',()=>{const reference=new Date('2026-08-03T12:00:00+07:00');expect(parseEventDateEvidenceFromText('Dinner August 6',reference)).toEqual({date:'2026-08-06',explicitYear:false,matchedText:'August 6'});expect(parseEventDateEvidenceFromText('Dinner August 6 2021',reference)).toEqual({date:'2021-08-06',explicitYear:true,matchedText:'August 6 2021'});});
 
 	it.each([
 		null,

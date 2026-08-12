@@ -116,7 +116,7 @@ Ingestion publishes every technically successful event immediately. Later enrich
 
 ### CORS and methods
 
-`PUBLIC_SITE_ORIGIN` configures the one allowed frontend origin and must be set to the deployed website origin. Matching requests receive explicit CORS headers and `Vary: Origin`; other origins receive no allow-origin header. Missing or invalid configuration simply grants no cross-origin access and does not affect same-origin or unrelated routes. `OPTIONS` preflight returns `204`. Public resources support `GET` and `HEAD`; other methods return structured `405` with `Allow: GET, HEAD, OPTIONS`. Tests use `https://frontend.example.com` as the documented development origin.
+`PUBLIC_SITE_ORIGIN` configures the one allowed frontend origin and must be set to the deployed website origin. Matching requests receive explicit CORS headers and `Vary: Origin`; other origins receive no allow-origin header. Missing or invalid configuration simply grants no cross-origin access and does not affect same-origin or unrelated routes. `OPTIONS` preflight returns `204`. Public resources support `GET` and `HEAD`; other methods return structured `405` with `Allow: GET, HEAD, OPTIONS`. Production and integration tests use `https://bangkokwinescout.com`.
 
 ## LINE webhook
 
@@ -126,7 +126,7 @@ Receives LINE Messaging API webhook events. Known commands are routed to the com
 
 Supported commands: `ping`, `help`, `version`, and `about`.
 
-LINE retries are idempotent by message and asset identifiers. A successful intake acknowledgement precedes OCR, extraction, and persistence. Recoverable OCR or extraction failure creates a published `Wine Event` fallback with a public flyer; storage, D1, asset-link, binding, download, and malformed-message failures remain retryable technical failures.
+LINE retries are idempotent by message and asset identifiers. A successful intake acknowledgement precedes OCR, extraction, and persistence. Recoverable OCR or extraction failure creates a published fallback using the best deterministic title (or `Wine Event`) with a public flyer; storage, D1, asset-link, binding, download, and malformed-message failures remain retryable technical failures.
 
 ## Security boundary
 
@@ -135,3 +135,125 @@ LINE retries are idempotent by message and asset identifiers. A successful intak
 - Public identifiers never grant direct R2-key access.
 - Publication follows successful technical processing; metadata warnings do not block it.
 - Error responses do not include SQL errors or stack traces.
+
+## Admin event deletion
+
+### Browser admin interface
+
+Open `/admin/events-ui` in a browser. When no valid session is present, the
+Worker displays a token login form. A successful `POST /admin/login` redirects
+back to the event manager and sets an eight-hour `__Host-` session cookie with
+`HttpOnly`, `Secure`, and `SameSite=Strict`. The cookie contains a signed expiry,
+not `ADMIN_API_TOKEN`; rotating the token invalidates existing sessions.
+
+The event manager is served directly by the Worker with no external scripts,
+styles, fonts, or frontend framework. It supports title/venue search, published
+and draft filters, event/created-date sorting, refresh, thumbnails, multi-row
+selection, and permanent deletion. Thumbnails use the best event-owned image in
+`flyer`, `social`, `menu`, then other-image order and are streamed through the
+authenticated `GET /admin/assets/:assetId` route. Missing images render a neutral
+placeholder.
+Deletion requires typing `DELETE` in a confirmation dialog. Successful removal
+updates the displayed rows and event count without reloading the page.
+
+Use the **Log out** button to send `POST /admin/logout`. Logout expires the
+session cookie and redirects to the login page. Admin HTML and API responses use
+`Cache-Control: no-store`; HTML also receives a restrictive Content Security
+Policy, clickjacking protection, MIME-sniffing protection, and no-referrer
+policy.
+
+Browser sessions and the existing terminal Bearer token are accepted by all
+admin event, bulk-delete, and asset endpoints. The token is never
+written to HTML, JavaScript, URLs, logs, or browser storage.
+
+### `GET /admin/events`
+
+Lists all events for development and operational inspection, including drafts and
+other unpublished statuses. The response is JSON-only, requires the same
+`Authorization: Bearer <ADMIN_API_TOKEN>` credential as permanent deletion, and
+is never cacheable. Events are ordered by newest `event_date`, then newest
+`created_at`; undated events appear after dated events. Asset counts are computed
+in the listing query.
+
+Each event also contains nullable `thumbnailUrl` and `thumbnailAssetType`
+properties. The URL is an authenticated, same-origin admin URL and must not be
+treated as a public asset URL.
+
+```sh
+curl \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  "https://bangkok-wine-scout-worker.example/admin/events"
+```
+
+```json
+{
+  "count": 1,
+  "events": [{
+    "id": "line-625...",
+    "title": "The Great Wines of Valpolicella",
+    "slug": "the-great-wines-of-valpolicella-enoteca-bangkok-2026-08-06",
+    "eventDate": "2026-08-06",
+    "status": "published",
+    "publishedAt": "2026-08-03T08:17:14Z",
+    "venue": "Enoteca",
+    "priceTHB": 2500,
+    "assetCount": 3,
+    "createdAt": "2026-08-03T08:14:31Z"
+  }]
+}
+```
+
+### `DELETE /admin/events/:eventId`
+
+Permanently deletes an event through the single complete-deletion service. The
+endpoint requires `Authorization: Bearer <ADMIN_API_TOKEN>` and returns
+`Cache-Control: no-store`. Invalid identifiers return `400`, missing or wrong
+credentials return `401`, and a missing event returns a successful idempotent
+report with `eventFound: false`.
+
+```sh
+curl -X DELETE \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  "https://bangkok-wine-scout-worker.example/admin/events/line-625..."
+```
+
+### `POST /admin/events/bulk-delete`
+
+Permanently deletes 1–100 unique event IDs. The endpoint accepts the same Bearer
+token or signed browser session as the single-delete endpoint and calls the
+central complete-deletion service separately for every selected event. One
+failure does not hide the results of other IDs, and failed cleanup remains safe
+to retry.
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"eventIds":["event-1","event-2"]}' \
+  "https://bangkok-wine-scout-worker.example/admin/events/bulk-delete"
+```
+
+```json
+{
+  "success": true,
+  "requested": 2,
+  "deleted": 2,
+  "alreadyMissing": 0,
+  "failed": 0,
+  "results": [
+    { "eventId": "event-1", "success": true, "eventFound": true },
+    { "eventId": "event-2", "success": true, "eventFound": true }
+  ]
+}
+```
+
+The response reports database rows and R2 objects deleted or missing. If an R2
+operation fails, the event stays unpublished and its database ownership records
+are retained; `success` is `false` and the same request can be retried. Unexpected
+database failures return a generic `500` without a stack trace.
+
+Set the secret before deployment:
+
+```sh
+npx wrangler secret put ADMIN_API_TOKEN
+```

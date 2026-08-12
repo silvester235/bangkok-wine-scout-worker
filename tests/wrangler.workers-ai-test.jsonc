@@ -1,0 +1,9 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "bws-workers-ai-multimodal-test",
+  "main": "workers-ai-multimodal-test.ts",
+  "compatibility_date": "2026-07-29",
+  "ai": {
+    "binding": "AI"
+  }
+}

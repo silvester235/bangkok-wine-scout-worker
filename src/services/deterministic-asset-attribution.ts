@@ -15,8 +15,10 @@ export function attributeContributingAssets(events:BatchExtractedEvent[],assets:
 	if(events.length!==1)return{events:events.map((event)=>({...event,assetAssignments:[]})),unassignedAssets:assets.map((asset)=>asset.assetId),contributions:assets.map((asset)=>({assetId:asset.assetId,candidateIndex:null,assigned:false,assignedRole:'unassigned',attributionSignals:[],conflictSignals:[],exactReason:events.length>1?'left unassigned: one batch produced multiple event candidates':'left unassigned: no event candidate',contributedFields:[],identityScore:0,menuLike:false}))};
 	const event=events[0];const hints=new Map(event.assetAssignments.map((assignment)=>[assignment.assetId,assignment.role]));
 	const evaluated=assets.map((asset)=>{const text=`${asset.lineText??''}\n${asset.ocrText}`;const signals=menuSignals(text,event);return{asset,text,signals,menuLike:signals.length>0,score:identityScore(text,event),hint:hints.get(asset.assetId)};});
-	const explicitMain=evaluated.find((item)=>item.hint==='main');
-	const primary=explicitMain??[...evaluated].sort((a,b)=>b.score-a.score||a.asset.ordinal-b.asset.ordinal)[0];
+	// The model may confuse a visually rich menu for the primary flyer. Main-asset
+	// selection is therefore deterministic: strongest event identity wins and the
+	// first received image breaks ties. AI assignments remain role hints only.
+	const primary=[...evaluated].sort((a,b)=>b.score-a.score||a.asset.ordinal-b.asset.ordinal)[0];
 	const assignments=evaluated.map((item)=>{let role:EventAssetRole=item.hint??(item.menuLike?'menu':item.score>0?'flyer':'other');if(item.asset.assetId===primary?.asset.assetId)role='main';else if(role==='main')role=item.menuLike?'menu':'flyer';return{assetId:item.asset.assetId,role};});
 	const contributions=evaluated.map((item)=>{const role=assignments.find((assignment)=>assignment.assetId===item.asset.assetId)!.role;return{assetId:item.asset.assetId,candidateIndex:0,assigned:true,assignedRole:role,attributionSignals:[...item.signals,'one-batch-one-event ownership rule'],conflictSignals:[],exactReason:role==='main'?'assigned as the deterministic main asset':'assigned because every image in a publishable LINE message batch belongs to its single event',contributedFields:[],identityScore:item.score,menuLike:item.menuLike} satisfies AssetContribution;});
 	return{events:[{...event,assetAssignments:assignments}],unassignedAssets:[],contributions};

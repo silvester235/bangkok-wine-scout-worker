@@ -1,0 +1,57 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "bangkok-wine-scout-v2-preview",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-28",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"observability": { "enabled": true },
+	"upload_source_maps": true,
+	"ai": { "binding": "AI" },
+	"vars": {
+		"AI_PROVIDER": "workers_ai",
+		"AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+		"EDITORIAL_VISION_MODEL": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+		"CLOUDFLARE_ACCOUNT_ID": "5043abe3e62c4f0f4beed6b298a238f1",
+		"HIGH_THRESHOLD": "0.85",
+		"LOW_THRESHOLD": "0.45",
+		"AI_TIMEOUT_MS": "5000",
+		"LINE_TEXT_CONTEXT_WINDOW_SECONDS": "600",
+		"LINE_IMAGE_BATCH_WINDOW_SECONDS": "15",
+		"LINE_MESSAGE_BATCH_WINDOW_SECONDS": "60",
+		"AGENT_SUBMISSION_WINDOW_SECONDS": "60",
+		"AGENT_DONE_SETTLEMENT_SECONDS": "3",
+		"PUBLIC_SITE_ORIGIN": "",
+		"ENABLE_PUBLIC_EVENT_PAGES": "true",
+		"INGESTION_MODE": "v2",
+		"V2_PUBLICATION_ENABLED": "true"
+	},
+	"secrets": {
+		"required": [
+			"LINE_V2_CHANNEL_SECRET",
+			"LINE_V2_CHANNEL_ACCESS_TOKEN",
+			"ADMIN_API_TOKEN"
+		]
+	},
+	"workflows": [
+		{
+			"binding": "WINE_SCOUT_SUBMISSION_WORKFLOW",
+			"name": "bangkok-wine-scout-v2-preview-workflow",
+			"class_name": "WineScoutSubmissionWorkflow"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "EVENT_INTAKES",
+			"bucket_name": "bangkok-wine-scout-v2-preview-assets"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "bangkok-wine-scout-v2-preview-db",
+			"database_id": "27bc7da8-6fd6-4747-84fc-ea7bcecf597e",
+			"migrations_dir": "migrations"
+		}
+	]
+}

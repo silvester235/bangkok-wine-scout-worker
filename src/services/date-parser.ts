@@ -163,13 +163,42 @@ export function parseEventDate(value: string | null, referenceDate = new Date())
     return result;
   }
 
+	// Examples: August 6, Thursday August 6, August 6 2026.
+	const monthFirst = text.match(
+		/^(?:(sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat)\s+)?([^\s]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{2,4}))?$/i,
+	);
+	if (monthFirst) {
+		const weekday = monthFirst[1] ? WEEKDAYS[monthFirst[1].toLowerCase()] : null;
+		const month = MONTHS[monthFirst[2].toLowerCase()];
+		const day = Number(monthFirst[3]);
+		if (!month) return null;
+		if (!monthFirst[4]) return resolveYearlessDate(day, month, weekday, referenceDate);
+		const result = iso(normalizeYear(Number(monthFirst[4])), month, day);
+		if (!result) return null;
+		if (weekday !== null && new Date(`${result}T00:00:00Z`).getUTCDay() !== weekday) return null;
+		return result;
+	}
+
   return null;
 }
 
 export function parseEventDateFromText(text: string, referenceDate = new Date()): string | null {
-  const match = text.match(
+	return parseEventDateEvidenceFromText(text, referenceDate)?.date ?? null;
+}
+
+export interface EventDateEvidence { date:string; explicitYear:boolean; matchedText:string }
+
+export function parseEventDateEvidenceFromText(text:string,referenceDate=new Date()):EventDateEvidence|null {
+	const isoMatch=text.match(/\b\d{4}-\d{2}-\d{2}\b/);if(isoMatch){const date=parseEventDate(isoMatch[0],referenceDate);if(date)return{date,explicitYear:true,matchedText:isoMatch[0]};}
+	const numericMatch=text.match(/\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b/);if(numericMatch){const date=parseEventDate(numericMatch[0],referenceDate);if(date)return{date,explicitYear:true,matchedText:numericMatch[0]};}
+	const dayFirst = text.match(
     /\b(?:(sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat)\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)(?:\s+(\d{2,4}))?\b/i,
   );
-
-  return match ? parseEventDate(match[0], referenceDate) : null;
+	const monthFirst = text.match(
+		/\b(?:(sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat)\s+)?(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{2,4}))?\b/i,
+	);
+	const match = dayFirst ?? monthFirst;
+	if(!match)return null;const date=parseEventDate(match[0],referenceDate);if(!date)return null;
+	const explicitYear=Boolean(dayFirst?dayFirst[4]:monthFirst?.[4]);
+	return{date,explicitYear,matchedText:match[0]};
 }

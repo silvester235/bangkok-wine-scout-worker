@@ -235,9 +235,37 @@ R2 asset to one batch, including order, content type, object key, and received t
 Unique constraints on `line_message_id` and `asset_id` enforce webhook and asset
 idempotency without changing existing `events` or `event_assets` rows.
 
+Migration 0015 adds `line_webhook_delivery_receipts` for delivery-wide idempotency
+and at-most-once acknowledgement claims. It stores identifiers, a hashed
+conversation identity, outcomes, and timestamps only. It also adds
+`minimal_event_id`, `shell_anchor_asset_id`, and `shell_created_at` to
+`line_image_batches`; the non-null minimal event ID is unique across batches.
+`processing_attempt_count` on batch assets records bounded queue retries.
+
 `line_message_batch_texts` stores immutable non-command text membership, message
 ordering, receive time, conversation identity, and the private source `asset_id`.
 Unique `message_id` and `asset_id` constraints make webhook retries idempotent while
 preserving text boundaries for extraction and provenance. The historical
 `line_image_batches` name is retained to avoid a disruptive schema rename; it now
 coordinates mixed text-and-image message batches.
+
+## Complete event deletion
+
+`event_assets.event_id` is the ownership boundary for canonical event assets and
+already cascades when its event is deleted. `line_text_contexts.linked_event_id`
+and batch result JSON provide the other direct event references. Batch child rows
+are correlated through asset and source-message IDs. These existing associations
+are sufficient, so complete deletion requires no schema migration or backfill.
+
+The workflow first changes the event to `draft` and clears `published_at`, then
+removes exact persisted R2 keys and each owned intake-asset prefix. An exclusively
+owned batch also loses its `line-batches/{batchId}/` diagnostic prefix. A shared
+batch is retained: only the target event's source rows and result ID are removed.
+The final D1 batch deletes LINE contexts, URL delivery records, batch members,
+empty exclusively owned batches, event assets, and the event. Wines and regions
+are event-owned JSON fields, so they disappear with the event; the current schema
+has no shared wine, venue, producer, or source entity to delete.
+
+Malformed legacy hash-index metadata is preserved because its ownership cannot be
+verified safely. Likewise, shared batch diagnostic objects are retained because
+they may contain evidence for another event.

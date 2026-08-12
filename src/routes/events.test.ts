@@ -12,6 +12,12 @@ const schema = `
 		id TEXT PRIMARY KEY, intake_id TEXT NOT NULL, asset_id TEXT NOT NULL, title TEXT,
 		event_date TEXT, start_time TEXT, price_thb INTEGER, venue TEXT, contact_email TEXT,
 		contact_phone TEXT, wines_json TEXT NOT NULL DEFAULT '[]', wine_regions_json TEXT NOT NULL DEFAULT '[]',
+		organizer TEXT, address TEXT, district TEXT, website_url TEXT, booking_url TEXT,
+		booking_instructions TEXT, contact_text TEXT, description TEXT, course_count INTEGER,
+		price_text TEXT, currency TEXT, price_qualifier TEXT, end_time TEXT, timezone TEXT,
+		wine_producers_json TEXT NOT NULL DEFAULT '[]', partners_json TEXT NOT NULL DEFAULT '[]',
+		merchants_json TEXT NOT NULL DEFAULT '[]', menu_json TEXT NOT NULL DEFAULT '[]',
+		notes_json TEXT NOT NULL DEFAULT '[]', source_contact_json TEXT NOT NULL DEFAULT '[]', updated_at TEXT,
 		is_wine_event INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
 		status TEXT NOT NULL DEFAULT 'draft', published_at TEXT, slug TEXT
 	);
@@ -23,6 +29,7 @@ const schema = `
 		PRIMARY KEY (event_id, asset_id)
 	);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_event_assets_asset_id ON event_assets(asset_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_events_asset_id ON events(asset_id);
 `;
 
 function dateOffset(days: number): string {
@@ -102,6 +109,89 @@ beforeEach(async () => {
 });
 
 describe('public event API', () => {
+	it('renders the preview event list from published D1 rows with R2-backed image URLs',async()=>{await addEvent({id:'html',title:'Chez Papa Wine Pairing',slug:'chez-papa-wine-pairing'});await addAsset('html','html-flyer',{role:'flyer'});const response=await SELF.fetch('https://preview.example.com/events');const body=await response.text();expect(response.status).toBe(200);expect(response.headers.get('content-type')).toContain('text/html');expect(body).toContain('Chez Papa Wine Pairing');expect(body).toContain('/events/chez-papa-wine-pairing');expect(body).toContain('/api/assets/html-flyer');});
+
+	it('renders a published event detail and returns HTML 404 for drafts and unknown slugs',async()=>{await addEvent({id:'html-detail',title:'Chapoutier &lt; Dinner',slug:'chapoutier-dinner'});await addAsset('html-detail','detail-flyer',{role:'main'});const response=await SELF.fetch('https://preview.example.com/events/chapoutier-dinner');const body=await response.text();expect(response.status).toBe(200);expect(body).toContain('Chapoutier &amp;lt; Dinner');expect(body).toContain('/api/assets/detail-flyer');await addEvent({id:'html-draft',status:'draft',publishedAt:null,slug:'html-draft'});for(const path of ['/events/html-draft','/events/unknown']){const missing=await SELF.fetch(`https://preview.example.com${path}`);expect(missing.status).toBe(404);expect(missing.headers.get('content-type')).toContain('text/html');}});
+
+	it('adds canonical metadata and valid Event JSON-LD from real D1 values', async () => {
+		await addEvent({ id: 'seo', title: 'California Wine Dinner', date: '2026-08-26', startTime: '19:00', venue: 'Waldorf Astoria Bangkok', slug: 'california-wine-dinner-waldorf-astoria-bangkok-2026-08-26' });
+		await env.DB.prepare("UPDATE events SET end_time='22:00', description='A five-course pairing dinner', organizer='Wine Host', address='151 Ratchadamri Road', booking_url='https://tickets.example.com/book', currency='THB' WHERE id='seo'").run();
+		await addAsset('seo', 'seo-flyer', { role: 'main' });
+		const response = await SELF.fetch('https://preview.example.com/events/california-wine-dinner-waldorf-astoria-bangkok-2026-08-26');
+		const body = await response.text();
+		expect(body).toContain('<link rel="canonical" href="https://bangkokwinescout.com/events/california-wine-dinner-waldorf-astoria-bangkok-2026-08-26">');
+		expect(body).not.toContain('workers.dev');
+		expect(body).not.toContain('www.bangkokwinescout.com');
+		const script = body.match(/<script type="application\/ld\+json">([^<]+)<\/script>/)?.[1];
+		expect(script).toBeTruthy();
+		const jsonLd = JSON.parse(script!);
+		expect(jsonLd).toMatchObject({ '@type': 'Event', name: 'California Wine Dinner', startDate: '2026-08-26T19:00:00+07:00', endDate: '2026-08-26T22:00:00+07:00', description: 'A five-course pairing dinner', location: { '@type': 'Place', name: 'Waldorf Astoria Bangkok', address: '151 Ratchadamri Road' }, organizer: { '@type': 'Organization', name: 'Wine Host' }, offers: { '@type': 'Offer', price: 1290, priceCurrency: 'THB', url: 'https://tickets.example.com/book' } });
+		expect(jsonLd.image).toEqual(['https://bangkokwinescout.com/api/assets/seo-flyer']);
+	});
+
+	it('omits unavailable optional structured data and safely escapes JSON-LD content', async () => {
+		await addEvent({ id: 'sparse-seo', title: 'Safe </script><script>alert(1)</script>', date: null, startTime: null, venue: '', slug: 'safe-event' });
+		await env.DB.prepare("UPDATE events SET price_thb=NULL, contact_email=NULL, contact_phone=NULL WHERE id='sparse-seo'").run();
+		const body = await (await SELF.fetch('https://preview.example.com/events/safe-event')).text();
+		expect(body).not.toContain('</script><script>alert(1)</script>');
+		const jsonLd = JSON.parse(body.match(/<script type="application\/ld\+json">([^<]+)<\/script>/)![1]);
+		expect(jsonLd).not.toHaveProperty('startDate');
+		expect(jsonLd).not.toHaveProperty('location');
+		expect(jsonLd).not.toHaveProperty('organizer');
+		expect(jsonLd).not.toHaveProperty('offers');
+	});
+
+	it('preserves HTML date filtering, including explicit historical ranges, with one list canonical', async () => {
+		await addEvent({ id: 'historical-html', title: 'Historical Dinner', date: '2026-07-18' });
+		await addEvent({ id: 'future-html', title: 'Future Dinner', date: '2026-09-18' });
+		const response = await SELF.fetch('https://preview.example.com/events?from=2026-07-01&to=2026-07-31');
+		const body = await response.text();
+		expect(response.status).toBe(200);
+		expect(body).toContain('Historical Dinner');
+		expect(body).not.toContain('Future Dinner');
+		expect(body).toContain('<link rel="canonical" href="https://bangkokwinescout.com/events">');
+	});
+
+	it('serves informational pages with canonical metadata and community submission wording', async () => {
+		const titles = new Set<string>();
+		const descriptions = new Set<string>();
+		for (const path of ['/about', '/share-an-event', '/legal', '/privacy', '/disclaimer']) {
+			const response = await SELF.fetch(`https://preview.example.com${path}`);
+			const body = await response.text();
+			expect(response.status).toBe(200);
+			expect(body).toContain(`<link rel="canonical" href="https://bangkokwinescout.com${path}">`);
+			titles.add(body.match(/<title>([^<]+)<\/title>/)![1]);
+			descriptions.add(body.match(/<meta name="description" content="([^"]+)">/)![1]);
+		}
+		expect(titles.size).toBe(5);
+		expect(descriptions.size).toBe(5);
+
+		const about = await (await SELF.fetch('https://preview.example.com/about')).text();
+		expect(about).toContain('community-driven');
+		expect(about).toContain('Anyone may submit a suitable Bangkok wine event');
+		expect(about).toContain('or simply someone who discovered an interesting event');
+
+		const share = await (await SELF.fetch('https://preview.example.com/share-an-event')).text();
+		expect(share).toContain('You do not need to be the organizer');
+	});
+
+	it('serves a public-only sitemap and robots policy on the canonical host', async () => {
+		await addEvent({ id: 'past-sitemap', date: '2020-01-01', slug: 'past-wine-event-2020-01-01' });
+		await addEvent({ id: 'draft-sitemap', status: 'draft', publishedAt: null, slug: 'draft-event' });
+		const sitemap = await SELF.fetch('https://preview.example.com/sitemap.xml');
+		const xml = await sitemap.text();
+		expect(sitemap.headers.get('content-type')).toContain('application/xml');
+		for (const path of ['/', '/events', '/about', '/share-an-event', '/legal', '/privacy', '/disclaimer', '/events/past-wine-event-2020-01-01']) expect(xml).toContain(`https://bangkokwinescout.com${path}`);
+		expect(xml).not.toContain('draft-event');
+		expect(xml).not.toContain('/api/');
+		expect(xml).not.toContain('/admin/');
+		const robots = await (await SELF.fetch('https://preview.example.com/robots.txt')).text();
+		expect(robots).toContain('Sitemap: https://bangkokwinescout.com/sitemap.xml');
+		expect(robots).toContain('Disallow: /api/');
+	});
+
+	it('supports HEAD and rejects mutations on preview HTML routes',async()=>{await addEvent({id:'html-head',slug:'html-head'});const head=await SELF.fetch('https://preview.example.com/events/html-head',{method:'HEAD'});expect(head.status).toBe(200);expect(await head.text()).toBe('');const post=await SELF.fetch('https://preview.example.com/events',{method:'POST'});expect(post.status).toBe(405);expect(post.headers.get('allow')).toBe('GET, HEAD');});
+
 	it('returns only published upcoming events and includes today in stable order', async () => {
 		await addEvent({ id: 'past', date: dateOffset(-1) });
 		await addEvent({ id: 'today-late', date: dateOffset(0), startTime: '20:00' });
@@ -188,6 +278,45 @@ describe('public event API', () => {
 		expect(body.data[1].date).toBeNull();
 	});
 
+	it('returns a sparse published fallback event with its flyer image', async () => {
+		await saveWineEvent(env.DB, {
+			intakeId: 'line-unreadable',
+			assetId: 'line-message-unreadable',
+			assetRole: 'main',
+			sourceType: 'line_image',
+			isPublic: true,
+			r2ObjectKey: 'intakes/line-unreadable/assets/line-message-unreadable/original',
+			contentType: 'image/jpeg',
+			title: 'Wine Event',
+			event: {
+				date: null,
+				startTime: null,
+				priceTHB: null,
+				venue: null,
+				contactEmail: null,
+				contactPhone: null,
+				wines: [],
+				wineRegions: [],
+				isWineEvent: true,
+			},
+		});
+
+		const { body } = await json('/api/events?limit=20');
+		const fallback = body.data.find((event: { title: string }) => event.title === 'Wine Event');
+
+		expect(fallback).toMatchObject({
+			date: null,
+			startTime: null,
+			venue: null,
+			priceTHB: null,
+			heroAsset: {
+				id: 'line-message-unreadable',
+				role: 'main',
+				url: '/api/assets/line-message-unreadable',
+			},
+		});
+	});
+
 	it('paginates stably across the dated-to-undated boundary', async () => {
 		await addEvent({ id: 'dated-a', date: dateOffset(1), startTime: '18:00' });
 		await addEvent({ id: 'dated-b', date: dateOffset(2), startTime: '18:00' });
@@ -228,11 +357,14 @@ describe('public event API', () => {
 		expect((await json(path)).body.data.map((event: { slug: string }) => event.slug)).toEqual(['slug-match']);
 	});
 
-	it('does not allow a past from date to bypass upcoming-only filtering', async () => {
-		await addEvent({ id: 'past', date: dateOffset(-2) });
-		await addEvent({ id: 'today', date: dateOffset(0) });
-		const { body } = await json(`/api/events?from=${dateOffset(-3)}`);
-		expect(body.data.map((event: { slug: string }) => event.slug)).toEqual(['slug-today']);
+	it('includes a past event within an explicit inclusive date range', async () => {
+		await addEvent({ id: 'gala', date: '2026-07-18' });
+		await addEvent({ id: 'before-range', date: '2026-04-30' });
+		await addEvent({ id: 'after-range', date: '2026-08-05' });
+
+		const { body } = await json('/api/events?from=2026-05-01&to=2026-08-04');
+
+		expect(body.data.map((event: { slug: string }) => event.slug)).toEqual(['slug-gala']);
 	});
 
 	it('returns published detail without internal source fields and hides drafts', async () => {
@@ -250,6 +382,14 @@ describe('public event API', () => {
 		expect(await head.text()).toBe('');
 		expect((await json('/api/events/slug-draft')).response.status).toBe(404);
 		expect((await json('/api/events/unknown')).response.status).toBe(404);
+	});
+
+	it('returns every persisted Chez Papa enrichment field', async () => {
+		await addEvent({ id: 'chez', title: 'Wine Pairing Dinner', date: '2026-08-26', startTime: '18:00', slug: 'wine-pairing-dinner-2026-08-26' });
+		await env.DB.prepare(`UPDATE events SET organizer=?, address=?, district=?, website_url=?, booking_instructions=?, contact_phone=?, description=?, course_count=?, price_text=?, currency=?, price_qualifier=?, wine_producers_json=?, merchants_json=?, source_contact_json=? WHERE id='chez'`)
+			.bind('Chez Papa French Bistro','Chez Papa Bangkok – Sukhumvit 51','Sukhumvit 51','https://chezpapabangkok.carrd.co/','Book your table','063 832 3605','5 Courses Wine Pairing Experience',5,'THB 1,490++','THB','++','["Chapoutier"]','["Vinum Lector"]','["063 832 3605"]').run();
+		const { body } = await json('/api/events/wine-pairing-dinner-2026-08-26');
+		expect(body.data).toEqual(expect.objectContaining({organizer:'Chez Papa French Bistro',address:'Chez Papa Bangkok – Sukhumvit 51',district:'Sukhumvit 51',websiteUrl:'https://chezpapabangkok.carrd.co/',bookingInstructions:'Book your table',contactPhone:'063 832 3605',description:'5 Courses Wine Pairing Experience',courseCount:5,priceText:'THB 1,490++',currency:'THB',priceQualifier:'++',wineProducers:['Chapoutier'],merchants:['Vinum Lector'],sourceContactInformation:['063 832 3605']}));
 	});
 
 	it('lists public visual assets in role order and excludes text and private assets', async () => {
@@ -313,13 +453,14 @@ describe('public event API', () => {
 
 	it('applies configured CORS to success and errors and handles preflight', async () => {
 		await addEvent({ id: 'public' });
-		const headers = { origin: 'https://frontend.example.com' };
+		const headers = { origin: 'https://bangkokwinescout.com' };
 		const success = await SELF.fetch('https://api.example.com/api/events', { headers });
 		const error = await SELF.fetch('https://api.example.com/api/events/unknown', { headers });
 		const options = await SELF.fetch('https://api.example.com/api/events', { method: 'OPTIONS', headers });
 		expect(success.headers.get('access-control-allow-origin')).toBe(headers.origin);
 		expect(error.headers.get('access-control-allow-origin')).toBe(headers.origin);
 		expect(options.status).toBe(204);
+		expect(options.headers.get('access-control-allow-origin')).toBe(headers.origin);
 		expect(options.headers.get('access-control-allow-methods')).toContain('HEAD');
 		const denied = await SELF.fetch('https://api.example.com/api/events', { headers: { origin: 'https://evil.example' } });
 		expect(denied.headers.get('access-control-allow-origin')).toBeNull();

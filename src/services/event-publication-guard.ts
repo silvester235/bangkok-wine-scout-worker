@@ -11,7 +11,13 @@ export interface PublishabilityResult {
 
 const GENERIC_TITLES = new Set(['wine event', 'event', 'wine dinner', 'untitled']);
 
-/** Hard publication boundary: menu/wine text alone can never create an event. */
+/**
+ * Metadata-quality evaluation for operator diagnostics.
+ *
+ * A successfully stored LINE flyer is always publishable. OCR and AI output are
+ * enrichment only, so missing identity fields are warnings rather than a hard
+ * publication boundary.
+ */
 export function validatePublishableEvent(input: { title: string | null; bookingUrl: string | null; event: NormalizedWineEvent }): PublishabilityResult {
 	const title = input.title?.trim() ?? '';
 	const meaningfulTitle = title.length >= 5 && !GENERIC_TITLES.has(title.toLocaleLowerCase('en-US'));
@@ -39,13 +45,15 @@ export function validatePublishableEvent(input: { title: string | null; bookingU
 		missingRequiredFields.push('minimumMetadataScore');
 		rejectionReasons.push(`metadata score ${score} is below required score 5`);
 	}
-	const publishable = rejectionReasons.length === 0;
+	const publishable = true;
 	return {
 		publishable,
 		score,
 		reasons,
 		missingRequiredFields,
 		rejectionReasons,
-		exactReason: publishable ? 'publishable: all deterministic requirements passed' : `not publishable: ${rejectionReasons.join('; ')}`,
+		exactReason: rejectionReasons.length === 0
+			? 'publishable: all deterministic metadata checks passed'
+			: `publishable with extraction warnings: ${rejectionReasons.join('; ')}`,
 	};
 }

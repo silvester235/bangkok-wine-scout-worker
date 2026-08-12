@@ -24,6 +24,8 @@ export interface EventSourceAssetInput {
 }
 
 export interface StoredWineEventInput {
+	/** Stable, caller-owned identity used by LINE batch publication shells. */
+	eventId?: string;
 	intakeId: string;
 	assetId: string;
 	assetRole?: EventAssetRole;
@@ -40,6 +42,106 @@ export interface StoredWineEventInput {
 export interface SaveWineEventResult {
 	id: string;
 	duplicate: boolean;
+}
+
+export interface AdminEventSummary {
+	id: string;
+	title: string | null;
+	slug: string | null;
+	eventDate: string | null;
+	status: string;
+	publishedAt: string | null;
+	venue: string | null;
+	priceTHB: number | null;
+	assetCount: number;
+	createdAt: string;
+	thumbnailUrl: string | null;
+	thumbnailAssetType: string | null;
+}
+
+interface AdminEventRow {
+	id: string;
+	title: string | null;
+	slug: string | null;
+	event_date: string | null;
+	status: string;
+	published_at: string | null;
+	venue: string | null;
+	price_thb: number | null;
+	asset_count: number;
+	created_at: string;
+	thumbnail_asset_id: string | null;
+	thumbnail_asset_type: string | null;
+}
+
+export interface AdminImageAsset {
+	assetId: string;
+	r2ObjectKey: string;
+	contentType: string;
+}
+
+export async function listAdminEvents(db: D1Database): Promise<AdminEventSummary[]> {
+	const result = await db.prepare(
+		`SELECT
+			e.id,
+			e.title,
+			e.slug,
+			e.event_date,
+			e.status,
+			e.published_at,
+			e.venue,
+			e.price_thb,
+			COUNT(a.asset_id) AS asset_count,
+			e.created_at,
+			(SELECT image.asset_id FROM event_assets image
+			 WHERE image.event_id = e.id
+				AND image.source_type != 'line_text'
+				AND image.r2_object_key IS NOT NULL
+				AND LOWER(image.content_type) LIKE 'image/%'
+			 ORDER BY CASE image.asset_role
+				WHEN 'flyer' THEN 0 WHEN 'social' THEN 1 WHEN 'menu' THEN 2 ELSE 3 END,
+				image.linked_at, image.asset_id LIMIT 1) AS thumbnail_asset_id,
+			(SELECT image.asset_role FROM event_assets image
+			 WHERE image.event_id = e.id
+				AND image.source_type != 'line_text'
+				AND image.r2_object_key IS NOT NULL
+				AND LOWER(image.content_type) LIKE 'image/%'
+			 ORDER BY CASE image.asset_role
+				WHEN 'flyer' THEN 0 WHEN 'social' THEN 1 WHEN 'menu' THEN 2 ELSE 3 END,
+				image.linked_at, image.asset_id LIMIT 1) AS thumbnail_asset_type
+		 FROM events e
+		 LEFT JOIN event_assets a ON a.event_id = e.id
+		 GROUP BY e.id
+		 ORDER BY e.event_date DESC, e.created_at DESC`,
+	).all<AdminEventRow>();
+
+	return (result.results ?? []).map((row) => ({
+		id: row.id,
+		title: row.title,
+		slug: row.slug,
+		eventDate: row.event_date,
+		status: row.status,
+		publishedAt: row.published_at,
+		venue: row.venue,
+		priceTHB: row.price_thb,
+		assetCount: Number(row.asset_count),
+		createdAt: row.created_at,
+		thumbnailUrl: row.thumbnail_asset_id ? `/admin/assets/${encodeURIComponent(row.thumbnail_asset_id)}` : null,
+		thumbnailAssetType: row.thumbnail_asset_type,
+	}));
+}
+
+export async function getAdminImageAsset(db: D1Database, assetId: string): Promise<AdminImageAsset | null> {
+	const row = await db.prepare(
+		`SELECT asset_id, r2_object_key, content_type
+		 FROM event_assets
+		 WHERE asset_id = ?
+			AND source_type != 'line_text'
+			AND r2_object_key IS NOT NULL
+			AND LOWER(content_type) LIKE 'image/%'
+		 LIMIT 1`,
+	).bind(assetId).first<{ asset_id: string; r2_object_key: string; content_type: string }>();
+	return row ? { assetId: row.asset_id, r2ObjectKey: row.r2_object_key, contentType: row.content_type } : null;
 }
 
 export interface EventCleanupAsset {
@@ -122,11 +224,29 @@ interface ExistingEventRow {
 	is_wine_event: number;
 	status: string;
 	published_at: string | null;
+	organizer: string | null; address: string | null; district: string | null; website_url: string | null;
+	booking_url: string | null; booking_instructions: string | null; contact_text: string | null;
+	description: string | null; course_count: number | null; price_text: string | null; currency: string | null;
+	price_qualifier: string | null; end_time: string | null; timezone: string | null;
+	wine_producers_json: string; partners_json: string; merchants_json: string; menu_json: string;
+	notes_json: string; source_contact_json: string;
 }
 
-interface StoredCanonicalEvent extends CanonicalEventData {
+export interface StoredCanonicalEvent extends CanonicalEventData {
 	status: string;
 	publishedAt: string | null;
+}
+
+const GENERIC_MATCH_TITLES = new Set(['wine event', 'event', 'wine dinner', 'untitled']);
+
+function hasSufficientMatchingEvidence(incoming: Pick<ExistingEventCandidate, 'title'|'date'|'startTime'|'venue'>): boolean {
+	const title = incoming.title?.trim().toLocaleLowerCase('en-US') ?? '';
+	const meaningfulTitle = title.length >= 5 && !GENERIC_MATCH_TITLES.has(title);
+	const hasDate = Boolean(incoming.date);
+	const hasTime = Boolean(incoming.startTime);
+	const hasVenue = Boolean(incoming.venue?.trim());
+	return (meaningfulTitle && [hasDate, hasTime, hasVenue].some(Boolean))
+		|| (hasDate && hasTime && hasVenue);
 }
 
 function parseStringArray(value: string): string[] {
@@ -138,7 +258,7 @@ function parseStringArray(value: string): string[] {
 	}
 }
 
-async function findEventById(db: D1Database, eventId: string): Promise<StoredCanonicalEvent | null> {
+export async function getStoredCanonicalEvent(db: D1Database, eventId: string): Promise<StoredCanonicalEvent | null> {
 	const row = await db
 		.prepare(
 			`SELECT
@@ -154,6 +274,9 @@ async function findEventById(db: D1Database, eventId: string): Promise<StoredCan
 				is_wine_event,
 				status,
 				published_at
+				, organizer, address, district, website_url, booking_url, booking_instructions, contact_text
+				, description, course_count, price_text, currency, price_qualifier, end_time, timezone
+				, wine_producers_json, partners_json, merchants_json, menu_json, notes_json, source_contact_json
 			FROM events
 			WHERE id = ?`,
 		)
@@ -174,6 +297,13 @@ async function findEventById(db: D1Database, eventId: string): Promise<StoredCan
 		isWineEvent: row.is_wine_event === 1,
 		status: row.status,
 		publishedAt: row.published_at,
+		organizer: row.organizer, address: row.address, district: row.district, websiteUrl: row.website_url,
+		bookingUrl: row.booking_url, bookingInstructions: row.booking_instructions, contactText: row.contact_text,
+		description: row.description, courseCount: row.course_count, priceText: row.price_text, currency: row.currency,
+		priceQualifier: row.price_qualifier, endTime: row.end_time, timezone: row.timezone,
+		wineProducers: parseStringArray(row.wine_producers_json), partners: parseStringArray(row.partners_json),
+		merchants: parseStringArray(row.merchants_json), menu: parseStringArray(row.menu_json),
+		notes: parseStringArray(row.notes_json), sourceContactInformation: parseStringArray(row.source_contact_json),
 	};
 }
 
@@ -302,20 +432,23 @@ export async function saveWineEvent(
 		startTime: input.event.startTime,
 		venue: input.event.venue,
 	};
-	const candidates = await findCandidateEvents(db, incoming);
+	const forcedExisting=input.eventId?await getStoredCanonicalEvent(db,input.eventId):null;
+	const matchingAllowed=!input.eventId&&hasSufficientMatchingEvidence(incoming);
+	const candidates = matchingAllowed?await findCandidateEvents(db, incoming):[];
 	const match = matchExistingEvent(incoming, candidates);
-	let resolvedEventId = match.eventId;
+	let resolvedEventId = forcedExisting?input.eventId!:match.eventId;
 	const createdAt = new Date().toISOString();
 
 	console.log('EVENT RESOLUTION', JSON.stringify({
 		candidates: candidates.length,
+		matchingAllowed,
 		bestMatch: match.eventId,
 		confidence: match.confidence,
 		reasons: match.reasons,
 		decision: match.matched ? 'MATCH' : 'NEW EVENT',
 	}));
 
-	const ambiguous = aiResolution
+	const ambiguous = !input.eventId && aiResolution
 		&& match.confidence > aiResolution.lowThreshold
 		&& match.confidence < aiResolution.highThreshold;
 	if (ambiguous) {
@@ -358,10 +491,10 @@ export async function saveWineEvent(
 		}
 	}
 
-	const id = resolvedEventId ?? `${input.intakeId}:${input.assetId}`;
+	const id = input.eventId ?? resolvedEventId ?? `${input.intakeId}:${input.assetId}`;
 
 	if (resolvedEventId) {
-		const existing = await findEventById(db, resolvedEventId);
+		const existing = await getStoredCanonicalEvent(db, resolvedEventId);
 		if (!existing) throw new Error(`Resolved event not found: ${resolvedEventId}`);
 
 		const merge = mergeEventData(existing, { title: input.title, ...input.event });
@@ -378,12 +511,15 @@ export async function saveWineEvent(
 			.join(' ');
 		const harmlessSupplementaryTitleConflict = (input.assetRole === 'menu' || input.assetRole === 'reminder')
 			&& supplementaryTitle(existing.title) === supplementaryTitle(input.title);
-		const suspiciousAutomaticMatch = identityConflictFields.has('date')
+		const suspiciousAutomaticMatch = !input.eventId && (
+			identityConflictFields.has('date')
 			|| identityConflictFields.has('venue')
-			|| (identityConflictFields.has('title') && !harmlessSupplementaryTitleConflict);
+			|| (identityConflictFields.has('title') && !harmlessSupplementaryTitleConflict)
+		);
 		if (suspiciousAutomaticMatch) {
-			const listFields = ['wines', 'wineRegions'] as const;
-			for (const field of listFields) merge.event[field] = existing[field];
+			const listFields = ['wines','wineRegions','wineProducers','partners','merchants','menu','notes','sourceContactInformation'] as const;
+			const mergedEvent = merge.event as unknown as Record<string, unknown>;
+			for (const field of listFields) mergedEvent[field] = existing[field] ?? [];
 			merge.changedFields = merge.changedFields.filter((field) => !listFields.includes(field as typeof listFields[number]));
 		}
 		const slug = await createUniqueEventSlug(db, {
@@ -405,9 +541,30 @@ export async function saveWineEvent(
 					wines_json = ?,
 					wine_regions_json = ?,
 					is_wine_event = ?,
+					organizer = ?,
+					address = ?,
+					district = ?,
+					website_url = ?,
+					booking_url = ?,
+					booking_instructions = ?,
+					contact_text = ?,
+					description = ?,
+					course_count = ?,
+					price_text = ?,
+					currency = ?,
+					price_qualifier = ?,
+					end_time = ?,
+					timezone = ?,
+					wine_producers_json = ?,
+					partners_json = ?,
+					merchants_json = ?,
+					menu_json = ?,
+					notes_json = ?,
+					source_contact_json = ?,
 					slug = ?,
 					status = 'published',
-					published_at = COALESCE(published_at, ?)
+					published_at = COALESCE(published_at, ?),
+					updated_at = ?
 				WHERE id = ?`,
 			)
 			.bind(
@@ -421,7 +578,28 @@ export async function saveWineEvent(
 				JSON.stringify(merge.event.wines),
 				JSON.stringify(merge.event.wineRegions),
 				merge.event.isWineEvent ? 1 : 0,
+				merge.event.organizer ?? null,
+				merge.event.address ?? null,
+				merge.event.district ?? null,
+				merge.event.websiteUrl ?? null,
+				merge.event.bookingUrl ?? null,
+				merge.event.bookingInstructions ?? null,
+				merge.event.contactText ?? null,
+				merge.event.description ?? null,
+				merge.event.courseCount ?? null,
+				merge.event.priceText ?? null,
+				merge.event.currency ?? null,
+				merge.event.priceQualifier ?? null,
+				merge.event.endTime ?? null,
+				merge.event.timezone ?? null,
+				JSON.stringify(merge.event.wineProducers ?? []),
+				JSON.stringify(merge.event.partners ?? []),
+				JSON.stringify(merge.event.merchants ?? []),
+				JSON.stringify(merge.event.menu ?? []),
+				JSON.stringify(merge.event.notes ?? []),
+				JSON.stringify(merge.event.sourceContactInformation ?? []),
 				slug,
+				createdAt,
 				createdAt,
 				id,
 			)
@@ -444,6 +622,7 @@ export async function saveWineEvent(
 		title: input.title,
 		venue: input.event.venue,
 		date: input.event.date,
+		replaceGeneric: Boolean(input.title && !GENERIC_MATCH_TITLES.has(input.title.trim().toLocaleLowerCase('en-US'))),
 	});
 	await db
 		.prepare(
@@ -461,28 +640,75 @@ export async function saveWineEvent(
 				wines_json,
 				wine_regions_json,
 				is_wine_event,
+				organizer,
+				address,
+				district,
+				website_url,
+				booking_url,
+				booking_instructions,
+				contact_text,
+				description,
+				course_count,
+				price_text,
+				currency,
+				price_qualifier,
+				end_time,
+				timezone,
+				wine_producers_json,
+				partners_json,
+				merchants_json,
+				menu_json,
+				notes_json,
+				source_contact_json,
 				slug,
 				status,
 				published_at,
-				created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
+				created_at,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?)
 			ON CONFLICT(asset_id) DO UPDATE SET
-				title = excluded.title,
-				event_date = excluded.event_date,
-				start_time = excluded.start_time,
-				price_thb = excluded.price_thb,
-				venue = excluded.venue,
-				contact_email = excluded.contact_email,
-				contact_phone = excluded.contact_phone,
-				wines_json = excluded.wines_json,
-				wine_regions_json = excluded.wine_regions_json,
-				is_wine_event = excluded.is_wine_event,
+				title = CASE
+					WHEN (events.title IS NULL OR events.title = '' OR LOWER(events.title) IN ('wine event', 'event', 'untitled'))
+						AND excluded.title IS NOT NULL AND excluded.title <> '' THEN excluded.title
+					ELSE events.title END,
+				event_date = COALESCE(events.event_date, excluded.event_date),
+				start_time = COALESCE(events.start_time, excluded.start_time),
+				price_thb = COALESCE(events.price_thb, excluded.price_thb),
+				venue = COALESCE(events.venue, excluded.venue),
+				contact_email = COALESCE(events.contact_email, excluded.contact_email),
+				contact_phone = COALESCE(events.contact_phone, excluded.contact_phone),
+				wines_json = CASE WHEN events.wines_json = '[]' THEN excluded.wines_json ELSE events.wines_json END,
+				wine_regions_json = CASE WHEN events.wine_regions_json = '[]' THEN excluded.wine_regions_json ELSE events.wine_regions_json END,
+				is_wine_event = MAX(events.is_wine_event, excluded.is_wine_event),
+				organizer = COALESCE(events.organizer, excluded.organizer),
+				address = COALESCE(events.address, excluded.address),
+				district = COALESCE(events.district, excluded.district),
+				website_url = COALESCE(events.website_url, excluded.website_url),
+				booking_url = COALESCE(events.booking_url, excluded.booking_url),
+				booking_instructions = COALESCE(events.booking_instructions, excluded.booking_instructions),
+				contact_text = COALESCE(events.contact_text, excluded.contact_text),
+				description = COALESCE(events.description, excluded.description),
+				course_count = COALESCE(events.course_count, excluded.course_count),
+				price_text = COALESCE(events.price_text, excluded.price_text),
+				currency = COALESCE(events.currency, excluded.currency),
+				price_qualifier = COALESCE(events.price_qualifier, excluded.price_qualifier),
+				end_time = COALESCE(events.end_time, excluded.end_time),
+				timezone = COALESCE(events.timezone, excluded.timezone),
+				wine_producers_json = CASE WHEN events.wine_producers_json = '[]' THEN excluded.wine_producers_json ELSE events.wine_producers_json END,
+				partners_json = CASE WHEN events.partners_json = '[]' THEN excluded.partners_json ELSE events.partners_json END,
+				merchants_json = CASE WHEN events.merchants_json = '[]' THEN excluded.merchants_json ELSE events.merchants_json END,
+				menu_json = CASE WHEN events.menu_json = '[]' THEN excluded.menu_json ELSE events.menu_json END,
+				notes_json = CASE WHEN events.notes_json = '[]' THEN excluded.notes_json ELSE events.notes_json END,
+				source_contact_json = CASE WHEN events.source_contact_json = '[]' THEN excluded.source_contact_json ELSE events.source_contact_json END,
 				slug = CASE
-					WHEN events.slug IS NULL OR events.slug = '' THEN excluded.slug
+					WHEN events.slug IS NULL OR events.slug = ''
+						OR (LOWER(events.title) IN ('wine event', 'event', 'untitled') AND excluded.title IS NOT NULL AND LOWER(excluded.title) NOT IN ('wine event', 'event', 'untitled'))
+						THEN excluded.slug
 					ELSE events.slug
 				END,
 				status = 'published',
-				published_at = COALESCE(events.published_at, excluded.published_at)`,
+				published_at = COALESCE(events.published_at, excluded.published_at),
+				updated_at = excluded.updated_at`,
 		)
 		.bind(
 			id,
@@ -498,7 +724,28 @@ export async function saveWineEvent(
 			JSON.stringify(input.event.wines),
 			JSON.stringify(input.event.wineRegions),
 			input.event.isWineEvent ? 1 : 0,
+			input.event.organizer ?? null,
+			input.event.address ?? null,
+			input.event.district ?? null,
+			input.event.websiteUrl ?? null,
+			input.event.bookingUrl ?? null,
+			input.event.bookingInstructions ?? null,
+			input.event.contactText ?? null,
+			input.event.description ?? null,
+			input.event.courseCount ?? null,
+			input.event.priceText ?? null,
+			input.event.currency ?? null,
+			input.event.priceQualifier ?? null,
+			input.event.endTime ?? null,
+			input.event.timezone ?? null,
+			JSON.stringify(input.event.wineProducers ?? []),
+			JSON.stringify(input.event.partners ?? []),
+			JSON.stringify(input.event.merchants ?? []),
+			JSON.stringify(input.event.menu ?? []),
+			JSON.stringify(input.event.notes ?? []),
+			JSON.stringify(input.event.sourceContactInformation ?? []),
 			slug,
+			createdAt,
 			createdAt,
 			createdAt,
 		)
