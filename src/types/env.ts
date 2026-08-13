@@ -25,4 +25,6 @@ export interface WorkerEnv {
 	V2_PUBLICATION_ENABLED?: string;
 	/** Secret Bearer token for authenticated administrator endpoints. */
 	ADMIN_API_TOKEN?: string;
+	/** LINE user ID that receives private new-event notifications. */
+	ADMIN_LINE_USER_ID?: string;
 }
