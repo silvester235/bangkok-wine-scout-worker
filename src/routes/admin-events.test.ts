@@ -54,7 +54,21 @@ const schema = `
 	CREATE TABLE IF NOT EXISTS line_webhook_delivery_receipts(webhook_event_id TEXT PRIMARY KEY,message_id TEXT NOT NULL,batch_id TEXT);
 	CREATE TABLE IF NOT EXISTS line_delivery_outbox(id TEXT PRIMARY KEY,receipt_id TEXT NOT NULL,batch_id TEXT,asset_id TEXT);
 	CREATE TABLE IF NOT EXISTS event_enrichment_state(asset_id TEXT PRIMARY KEY,event_id TEXT,intake_id TEXT NOT NULL,status TEXT,last_error_code TEXT);
-	CREATE TABLE IF NOT EXISTS agent_submissions(id TEXT PRIMARY KEY,result_event_id TEXT,result_action TEXT,updated_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS agent_submissions(
+		id TEXT PRIMARY KEY,source TEXT NOT NULL,conversation_key TEXT NOT NULL,status TEXT NOT NULL,
+		first_received_at TEXT NOT NULL,last_received_at TEXT NOT NULL,result_event_id TEXT,result_action TEXT,
+		error_message TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS agent_submission_items(
+		id TEXT PRIMARY KEY,submission_id TEXT NOT NULL,source_message_id TEXT NOT NULL,item_type TEXT NOT NULL,
+		asset_id TEXT,intake_id TEXT,r2_object_key TEXT,ordinal INTEGER NOT NULL,received_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS agent_submission_diagnostics(
+		submission_id TEXT PRIMARY KEY,ai_result_json TEXT,updated_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS agent_v2_webhook_receipts(
+		webhook_event_id TEXT PRIMARY KEY,submission_id TEXT
+	);
 `;
 
 interface AdminListBody {
@@ -72,6 +86,15 @@ interface AdminListBody {
 		createdAt: string;
 		thumbnailUrl: string | null;
 		thumbnailAssetType: string | null;
+	}>;
+}
+
+interface ReviewListBody {
+	count: number;
+	reviewItems: Array<{
+		id: string; title: string | null; eventDate: string | null; venue: string | null;
+		receivedAt: string; createdAt: string; reviewReason: string | null; source: string;
+		thumbnailUrl: string | null;
 	}>;
 }
 
@@ -104,6 +127,20 @@ async function authorizedList(): Promise<Response> {
 	});
 }
 
+async function insertReviewItem(id: string, input: {
+	status?: string; title?: string | null; reason?: string | null; eventDate?: string | null; venue?: string | null;
+} = {}): Promise<void> {
+	const createdAt = '2026-08-13T04:05:06.000Z';
+	await env.DB.batch([
+		env.DB.prepare(`INSERT INTO agent_submissions(
+			id,source,conversation_key,status,first_received_at,last_received_at,result_event_id,result_action,error_message,created_at,updated_at
+		) VALUES (?,'line_v2','user:test',?,'2026-08-13T04:00:00.000Z',?,NULL,NULL,?,?,?)`)
+			.bind(id, input.status ?? 'needs_review', createdAt, input.reason ?? 'meaningful title is required', createdAt, createdAt),
+		env.DB.prepare('INSERT INTO agent_submission_diagnostics(submission_id,ai_result_json,updated_at) VALUES(?,?,?)')
+			.bind(id, JSON.stringify({ event: { title: input.title ?? null, date: input.eventDate ?? null, venueName: input.venue ?? null } }), createdAt),
+	]);
+}
+
 async function login(token = env.ADMIN_API_TOKEN): Promise<string> {
 	const response = await SELF.fetch('https://example.com/admin/login', {
 		method: 'POST',
@@ -123,6 +160,9 @@ beforeAll(async () => {
 
 beforeEach(async () => {
 	await env.DB.batch([
+		env.DB.prepare('DELETE FROM agent_v2_webhook_receipts'),
+		env.DB.prepare('DELETE FROM agent_submission_diagnostics'),
+		env.DB.prepare('DELETE FROM agent_submission_items'),
 		env.DB.prepare('DELETE FROM line_delivery_outbox'),
 		env.DB.prepare('DELETE FROM line_webhook_delivery_receipts'),
 		env.DB.prepare('DELETE FROM line_url_ingestion_deliveries'),
@@ -136,6 +176,65 @@ beforeEach(async () => {
 		env.DB.prepare('DELETE FROM agent_submissions'),
 		env.DB.prepare('DELETE FROM events'),
 	]);
+});
+
+describe('review item admin API', () => {
+	it('returns only needs-review submissions with missing fields and the stored reason intact', async () => {
+		await insertReviewItem('review-missing-title');
+		await insertReviewItem('already-published', { status: 'published', title: 'Published submission' });
+
+		const unauthorized = await SELF.fetch('https://example.com/admin/review-items');
+		expect(unauthorized.status).toBe(401);
+		const response = await SELF.fetch('https://example.com/admin/review-items', {
+			headers: { authorization: `Bearer ${env.ADMIN_API_TOKEN}` },
+		});
+		const body = await response.json<ReviewListBody>();
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get('cache-control')).toBe('no-store');
+		expect(body.count).toBe(1);
+		expect(body.reviewItems[0]).toEqual({
+			id: 'review-missing-title', title: null, eventDate: null, venue: null,
+			receivedAt: '2026-08-13T04:00:00.000Z', createdAt: '2026-08-13T04:05:06.000Z',
+			reviewReason: 'meaningful title is required', source: 'line_v2', thumbnailUrl: null,
+		});
+	});
+
+	it('deletes the persisted review submission and owned files without affecting published events', async () => {
+		await insertEvent({ id: 'published-event', eventDate: '2026-08-20', createdAt: '2026-08-13T00:00:00Z' });
+		await insertReviewItem('delete-review', { title: 'Incomplete tasting' });
+		await env.DB.batch([
+			env.DB.prepare("INSERT INTO agent_submission_items(id,submission_id,source_message_id,item_type,asset_id,intake_id,r2_object_key,ordinal,received_at) VALUES('review-item','delete-review','line-message','image','review-asset','review-intake','intakes/review-intake/assets/review-asset/original',1,'2026-08-13')"),
+			env.DB.prepare("INSERT INTO agent_v2_webhook_receipts(webhook_event_id,submission_id) VALUES('receipt','delete-review')"),
+		]);
+		await env.EVENT_INTAKES.put('intakes/review-intake/assets/review-asset/original', new Uint8Array([1]));
+		await env.EVENT_INTAKES.put('intakes/review-intake/assets/review-asset/ocr.json', '{}');
+		await env.EVENT_INTAKES.put('agent-submissions/delete-review/ai-result.json', '{}');
+
+		const response = await SELF.fetch('https://example.com/admin/review-items/delete-review', {
+			method: 'DELETE', headers: { authorization: `Bearer ${env.ADMIN_API_TOKEN}` },
+		});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ success: true, reviewItemFound: true, reviewItemId: 'delete-review' });
+		expect(await env.DB.prepare("SELECT id FROM agent_submissions WHERE id='delete-review'").first()).toBeNull();
+		expect(await env.DB.prepare("SELECT id FROM agent_submission_items WHERE submission_id='delete-review'").first()).toBeNull();
+		expect(await env.DB.prepare("SELECT submission_id FROM agent_v2_webhook_receipts WHERE webhook_event_id='receipt'").first('submission_id')).toBeNull();
+		expect(await env.EVENT_INTAKES.head('intakes/review-intake/assets/review-asset/original')).toBeNull();
+		expect(await env.EVENT_INTAKES.head('agent-submissions/delete-review/ai-result.json')).toBeNull();
+		expect(await env.DB.prepare("SELECT status FROM events WHERE id='published-event'").first('status')).toBe('published');
+		expect((await (await authorizedList()).json<AdminListBody>()).events.map((event) => event.id)).toEqual(['published-event']);
+	});
+
+	it('refuses to delete a non-review submission even when its id resembles an event id', async () => {
+		await insertEvent({ id: 'protected', eventDate: '2026-08-20', createdAt: '2026-08-13T00:00:00Z' });
+		await insertReviewItem('protected', { status: 'published', title: 'Protected' });
+		const response = await SELF.fetch('https://example.com/admin/review-items/protected', {
+			method: 'DELETE', headers: { authorization: `Bearer ${env.ADMIN_API_TOKEN}` },
+		});
+		expect(response.status).toBe(409);
+		expect(await env.DB.prepare("SELECT status FROM events WHERE id='protected'").first('status')).toBe('published');
+		expect(await env.DB.prepare("SELECT status FROM agent_submissions WHERE id='protected'").first('status')).toBe('published');
+	});
 });
 
 describe('GET /admin/events', () => {
@@ -267,6 +366,10 @@ describe('admin browser session', () => {
 		expect(html).toContain('aria-current="page">Events</a>');
 		expect(html).toContain('Delete permanently');
 		expect(html).toContain('Search title or venue');
+		expect(html).toContain('Unpublished / Needs review');
+		expect(html).toContain('(missing title)');
+		expect(html).toContain('item.reviewReason');
+		expect(html).toContain("fetch('/admin/review-items/'");
 		expect(html).toContain("state.events=state.events.filter");
 		expect(html).not.toContain('V2 Submissions');
 		expect(html).not.toContain('agent-submissions');

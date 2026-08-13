@@ -8,6 +8,8 @@ import {
 	handleAdminLogin,
 	handleAdminLogout,
 	handleAdminUi,
+	handleAdminReviewItemList,
+	handleAdminReviewItemDelete,
 } from './routes/admin-events';
 import { handleHealth } from './routes/health';
 import { handleHome } from './routes/home';
@@ -71,6 +73,10 @@ export default {
 			return handleAdminEventList(request, env);
 		}
 
+		if (request.method === 'GET' && url.pathname === '/admin/review-items') {
+			return handleAdminReviewItemList(request, env);
+		}
+
 		if (request.method === 'POST' && url.pathname === '/admin/events/bulk-delete') {
 			return handleAdminBulkEventDelete(request, env);
 		}
@@ -78,6 +84,11 @@ export default {
 		const adminAsset = url.pathname.match(/^\/admin\/assets\/([^/]+)$/);
 		if (request.method === 'GET' && adminAsset) {
 			return handleAdminAsset(request, env, adminAsset[1]);
+		}
+
+		const adminReviewItemDelete = url.pathname.match(/^\/admin\/review-items\/([^/]+)$/);
+		if (request.method === 'DELETE' && adminReviewItemDelete) {
+			return handleAdminReviewItemDelete(request, env, adminReviewItemDelete[1]);
 		}
 
 		const adminEventDelete = url.pathname.match(/^\/admin\/events\/([^/]+)$/);

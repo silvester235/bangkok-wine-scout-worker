@@ -217,6 +217,22 @@ curl -X DELETE \
   "https://bangkok-wine-scout-worker.example/admin/events/line-625..."
 ```
 
+### Review items
+
+The browser admin interface also loads `GET /admin/review-items` into a separate
+**Unpublished / Needs review** section. This endpoint returns only V2 agent
+submissions whose status is `needs_review`; it does not return or publish
+canonical events. Existing extracted title, event date, venue, received/created
+timestamps, source, review reason, and an authenticated thumbnail URL are
+returned when available. Missing extracted fields are `null`.
+
+`DELETE /admin/review-items/:reviewItemId` permanently removes only a submission
+that is still in `needs_review`, its diagnostics and item rows, and its unshared
+R2 source/analysis objects. A submission in any other status returns `409` and
+no canonical `events` row is deleted. Both endpoints accept the same signed
+browser session or Bearer token as the existing event administration routes and
+return `Cache-Control: no-store`.
+
 ### `POST /admin/events/bulk-delete`
 
 Permanently deletes 1–100 unique event IDs. The endpoint accepts the same Bearer
