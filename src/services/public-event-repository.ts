@@ -129,15 +129,14 @@ function assetUrl(assetId: string): string {
 	return `/api/assets/${encodeURIComponent(assetId)}`;
 }
 
-function mapAsset(row: PublicAssetRow, title: string | null): PublicAssetSummary {
-	const label = title?.trim() || 'wine event';
+function mapAsset(row: PublicAssetRow): PublicAssetSummary {
 	return {
 		id: row.asset_id,
 		role: row.asset_role,
 		type: row.source_type,
 		contentType: row.content_type,
 		url: assetUrl(row.asset_id),
-		alt: `${row.asset_role === 'flyer' ? 'Flyer' : 'Image'} for ${label}`,
+		alt: '',
 	};
 }
 
@@ -147,7 +146,7 @@ function mapEvent(row: PublicEventRow): PublicEventSummary {
 		asset_role: row.hero_asset_role ?? 'other',
 		source_type: row.hero_source_type ?? 'line_image',
 		content_type: row.hero_content_type,
-	}, row.title) : null;
+	}) : null;
 	return {
 		slug: row.slug,
 		title: row.title,
@@ -332,7 +331,7 @@ export async function getPublishedEventBySlug(db: D1Database, slug: string): Pro
 		LIMIT 1`,
 	).bind(slug).first<PublicEventRow>();
 	if (!row) return null;
-	return { ...mapEvent(row), contactEmail: row.contact_email, contactPhone: row.contact_phone, assets: await listPublicEventAssets(db, row.id, row.title) };
+	return { ...mapEvent(row), contactEmail: row.contact_email, contactPhone: row.contact_phone, assets: await listPublicEventAssets(db, row.id) };
 }
 
 export async function listPublishedEventSlugs(db: D1Database): Promise<string[]> {
@@ -348,7 +347,6 @@ export async function listPublishedEventSlugs(db: D1Database): Promise<string[]>
 export async function listPublicEventAssets(
 	db: D1Database,
 	eventId: string,
-	title: string | null,
 ): Promise<PublicAssetSummary[]> {
 	const result = await db.prepare(
 		`SELECT ea.asset_id, ea.asset_role, ea.source_type, ea.content_type
@@ -362,7 +360,7 @@ export async function listPublicEventAssets(
 			WHEN 'reminder' THEN 3 WHEN 'social' THEN 4 WHEN 'map' THEN 5 ELSE 6 END,
 			ea.linked_at, ea.asset_id`,
 	).bind(eventId).all<PublicAssetRow>();
-	return (result.results ?? []).map((asset) => mapAsset(asset, title));
+	return (result.results ?? []).map(mapAsset);
 }
 
 export async function getPublicAsset(db: D1Database, assetId: string): Promise<PublicAssetRecord | null> {
@@ -372,21 +370,17 @@ export async function getPublicAsset(db: D1Database, assetId: string): Promise<P
 			ea.asset_role,
 			ea.source_type,
 			ea.content_type,
-			ea.r2_object_key,
-			e.title
+			ea.r2_object_key
 		FROM event_assets ea
 		JOIN events e ON e.id = ea.event_id
 		WHERE ea.asset_id = ?
 			AND ${PUBLIC_EVENT_CONDITION}
 			AND ${PUBLIC_ASSET_CONDITION}
 		LIMIT 1`,
-	).bind(assetId).first<PublicAssetRow & {
-		r2_object_key: string;
-		title: string | null;
-	}>();
+	).bind(assetId).first<PublicAssetRow & { r2_object_key: string }>();
 	if (!row) return null;
 	return {
-		...mapAsset(row, row.title),
+		...mapAsset(row),
 		r2ObjectKey: row.r2_object_key,
 	};
 }

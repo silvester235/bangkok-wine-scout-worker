@@ -81,7 +81,7 @@ Example:
         "role": "flyer",
         "contentType": "image/jpeg",
         "url": "/api/assets/public-asset-id",
-        "alt": "Flyer for Austrian Wine Masterclass"
+        "alt": ""
       },
       "publishedAt": "2026-07-01T12:00:00.000Z"
     }

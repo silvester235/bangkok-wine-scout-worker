@@ -400,6 +400,19 @@ describe('public event API', () => {
 		await addAsset('public', 'private', { isPublic: false });
 		const { body } = await json('/api/events/slug-public/assets');
 		expect(body.data.map((asset: { id: string }) => asset.id)).toEqual(['flyer', 'menu']);
+		expect(body.data.map((asset: { alt: string }) => asset.alt)).toEqual(['', '']);
+	});
+
+	it('returns an empty alt string instead of generating generic text from the event title', async () => {
+		await addEvent({ id: 'alt', title: 'Bangkok Burgundy Dinner' });
+		await addAsset('alt', 'alt-flyer', { role: 'flyer' });
+		const list = await json('/api/events');
+		const detail = await json('/api/events/slug-alt');
+
+		expect(list.body.data.find((event: { slug: string }) => event.slug === 'slug-alt').heroAsset.alt).toBe('');
+		expect(detail.body.data.heroAsset.alt).toBe('');
+		expect(detail.body.data.assets[0].alt).toBe('');
+		expect(JSON.stringify(detail.body)).not.toContain('Flyer for Bangkok Burgundy Dinner');
 	});
 
 	it('excludes assets without stored R2 keys or image content types', async () => {
