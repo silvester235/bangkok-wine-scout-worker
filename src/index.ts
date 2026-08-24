@@ -26,7 +26,11 @@ import { handleAgentWebhookV2 } from './routes/agent-webhook-v2';
 import { handlePublicEventPages } from './routes/public-event-pages';
 import { getIngestionMode } from './services/runtime-controls';
 import { runAgentSubmissionReconciliation } from './services/agent-submission-reconciliation';
+import { deleteSafeR2CleanupCandidates } from './services/admin-r2-cleanup-delete-service';
 export { WineScoutSubmissionWorkflow } from './workflows/wine-scout-submission-workflow';
+
+const MONTHLY_R2_CLEANUP_CRON = '0 3 1 * *';
+const AUTOMATIC_R2_MIN_AGE_DAYS = 30;
 
 export default {
 	async fetch(request, env: WorkerEnv, ctx:ExecutionContext): Promise<Response> {
@@ -141,7 +145,25 @@ export default {
 		}
 	},
 
-	async scheduled(_controller:ScheduledController,env:WorkerEnv,ctx:ExecutionContext):Promise<void>{
-		ctx.waitUntil(Promise.all([runDeliveryReconciliation(env,{limit:25}),runAgentSubmissionReconciliation(env,{limit:25})]).then(()=>undefined));
+	async scheduled(controller:ScheduledController,env:WorkerEnv,ctx:ExecutionContext):Promise<void>{
+		const tasks: Promise<unknown>[] = [
+			runDeliveryReconciliation(env,{limit:25}),
+			runAgentSubmissionReconciliation(env,{limit:25}),
+		];
+		if (controller.cron === MONTHLY_R2_CLEANUP_CRON) {
+			tasks.push(deleteSafeR2CleanupCandidates(env,{minAgeDays:AUTOMATIC_R2_MIN_AGE_DAYS}).then((result) => {
+				console.log(JSON.stringify({
+					event:'scheduled_r2_cleanup_completed',
+					minAgeDays:AUTOMATIC_R2_MIN_AGE_DAYS,
+					success:result.success,
+					requestedAssets:result.requestedAssets,
+					deletedAssets:result.deletedAssets,
+					skippedAssets:result.skippedAssets,
+					objectsDeleted:result.objectsDeleted,
+					objectsFailed:result.objectsFailed,
+				}));
+			}));
+		}
+		ctx.waitUntil(Promise.all(tasks).then(()=>undefined));
 	},
 } satisfies ExportedHandler<WorkerEnv, ImageProcessingMessage|BatchProcessingMessage>;
