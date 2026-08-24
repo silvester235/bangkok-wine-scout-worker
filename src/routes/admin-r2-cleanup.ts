@@ -75,7 +75,7 @@ export async function handleAdminR2CleanupDelete(request: Request, env: WorkerEn
 	if (!await isAuthorized(request, env)) return noStoreJson({ error: 'Unauthorized' }, 401);
 	let body: { confirm?: unknown; minAgeDays?: unknown; assetIds?: unknown; deleteAllSafe?: unknown };
 	try {
-		body = await request.json<typeof body>();
+		body = await request.json() as typeof body;
 	} catch {
 		return noStoreJson({ error: 'Invalid JSON body.' }, 400);
 	}
