@@ -1,7 +1,9 @@
 import { inspectR2CleanupCandidates } from '../services/admin-r2-cleanup-service';
+import { deleteSafeR2CleanupCandidates } from '../services/admin-r2-cleanup-delete-service';
 import type { WorkerEnv } from '../types/env';
 
 const SESSION_COOKIE = '__Host-bws_admin_session';
+const DELETE_CONFIRMATION = 'DELETE_SAFE_ORPHANS';
 const encoder = new TextEncoder();
 
 async function sameSecret(provided: string, expected: string): Promise<boolean> {
@@ -52,15 +54,59 @@ async function isAuthorized(request: Request, env: WorkerEnv): Promise<boolean> 
 	return hasValidSession(request, expected);
 }
 
+function noStoreJson(body: unknown, status = 200): Response {
+	return Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
+}
+
 export async function handleAdminR2CleanupDryRun(request: Request, env: WorkerEnv): Promise<Response> {
-	if (!await isAuthorized(request, env)) return Response.json({ error: 'Unauthorized' }, { status: 401, headers: { 'cache-control': 'no-store' } });
+	if (!await isAuthorized(request, env)) return noStoreJson({ error: 'Unauthorized' }, 401);
 	const url = new URL(request.url);
 	const rawMinAge = url.searchParams.get('minAgeDays');
 	const minAgeDays = rawMinAge === null ? undefined : Number(rawMinAge);
 	try {
 		const result = await inspectR2CleanupCandidates(env, { minAgeDays });
-		return Response.json(result, { status: 200, headers: { 'cache-control': 'no-store' } });
+		return noStoreJson(result);
 	} catch (error) {
-		return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400, headers: { 'cache-control': 'no-store' } });
+		return noStoreJson({ error: error instanceof Error ? error.message : String(error) }, 400);
+	}
+}
+
+export async function handleAdminR2CleanupDelete(request: Request, env: WorkerEnv): Promise<Response> {
+	if (!await isAuthorized(request, env)) return noStoreJson({ error: 'Unauthorized' }, 401);
+	let body: { confirm?: unknown; minAgeDays?: unknown; assetIds?: unknown; deleteAllSafe?: unknown };
+	try {
+		body = await request.json<typeof body>();
+	} catch {
+		return noStoreJson({ error: 'Invalid JSON body.' }, 400);
+	}
+	if (body.confirm !== DELETE_CONFIRMATION) {
+		return noStoreJson({ error: `Confirmation required: ${DELETE_CONFIRMATION}` }, 400);
+	}
+	const minAgeDays = body.minAgeDays === undefined ? undefined : Number(body.minAgeDays);
+	const assetIds = Array.isArray(body.assetIds)
+		? [...new Set(body.assetIds.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).map((value) => value.trim()))]
+		: undefined;
+	const deleteAllSafe = body.deleteAllSafe === true;
+	if (!deleteAllSafe && (!assetIds || assetIds.length === 0)) {
+		return noStoreJson({ error: 'Provide assetIds or set deleteAllSafe=true.' }, 400);
+	}
+	if (deleteAllSafe && assetIds?.length) {
+		return noStoreJson({ error: 'Use either assetIds or deleteAllSafe=true, not both.' }, 400);
+	}
+	try {
+		const result = await deleteSafeR2CleanupCandidates(env, { minAgeDays, assetIds: deleteAllSafe ? undefined : assetIds });
+		console.log(JSON.stringify({
+			event: 'admin_r2_cleanup_delete',
+			success: result.success,
+			minAgeDays: result.minAgeDays,
+			requestedAssets: result.requestedAssets,
+			deletedAssets: result.deletedAssets,
+			skippedAssets: result.skippedAssets,
+			objectsDeleted: result.objectsDeleted,
+			objectsFailed: result.objectsFailed,
+		}));
+		return noStoreJson(result, result.success ? 200 : 207);
+	} catch (error) {
+		return noStoreJson({ error: error instanceof Error ? error.message : String(error) }, 400);
 	}
 }
