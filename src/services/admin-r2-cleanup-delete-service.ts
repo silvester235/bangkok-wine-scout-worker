@@ -23,9 +23,14 @@ async function hasCurrentProtection(db: D1Database, candidate: R2CleanupCandidat
 	const reasons: string[] = [];
 	const assetId = candidate.assetId;
 
+	// Do not use LIKE/GLOB here. D1/SQLite can reject LIKE patterns with
+	// "pattern too complex". A prefix check via instr() is deterministic and
+	// avoids wildcard semantics entirely.
 	const eventReference = await db.prepare(
-		`SELECT event_id FROM event_assets WHERE asset_id = ?1 OR r2_object_key LIKE ?2 LIMIT 1`,
-	).bind(assetId, `${candidate.prefix}%`).first<{ event_id: string }>();
+		`SELECT event_id FROM event_assets
+		 WHERE asset_id = ?1 OR instr(r2_object_key, ?2) = 1
+		 LIMIT 1`,
+	).bind(assetId, candidate.prefix).first<{ event_id: string }>();
 	if (eventReference) reasons.push(`referenced_by_event:${eventReference.event_id}`);
 
 	const submission = await db.prepare(
