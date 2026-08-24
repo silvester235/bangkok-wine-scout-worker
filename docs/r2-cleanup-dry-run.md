@@ -1,12 +1,12 @@
-# R2 cleanup dry run
+# R2 cleanup
 
-Admin-only orphan scan for `EVENT_INTAKES` R2 objects.
+Admin-only orphan scan and guarded deletion for `EVENT_INTAKES` R2 objects.
 
-Endpoint:
+## Dry run
 
 `GET /admin/r2-cleanup?minAgeDays=14`
 
-The endpoint is read-only. It does not delete R2 objects or D1 rows.
+The GET endpoint is read-only. It does not delete R2 objects or D1 rows.
 
 An intake asset is pre-protected when its `asset_id` is referenced by:
 
@@ -29,4 +29,36 @@ Each candidate then gets a second provenance/safety pass. The response includes:
 
 A candidate is not safe to delete when any event reference remains, an agent submission is active/review/published or has a result event, a LINE batch is active/review or has resulting event ids, or delivery-outbox work is still active.
 
-The top-level result additionally reports `safeToDeleteAssets`, `safeToDeleteObjects`, and `safeToDeleteBytes`. No delete operation is implemented.
+The top-level result additionally reports `safeToDeleteAssets`, `safeToDeleteObjects`, and `safeToDeleteBytes`.
+
+## Guarded deletion
+
+`POST /admin/r2-cleanup`
+
+Deletion requires normal admin authentication and the exact confirmation phrase `DELETE_SAFE_ORPHANS`.
+
+Delete all currently safe orphan candidates older than the cutoff:
+
+```json
+{
+  "confirm": "DELETE_SAFE_ORPHANS",
+  "minAgeDays": 14,
+  "deleteAllSafe": true
+}
+```
+
+Or delete only specific safe candidates:
+
+```json
+{
+  "confirm": "DELETE_SAFE_ORPHANS",
+  "minAgeDays": 14,
+  "assetIds": ["line-message-123"]
+}
+```
+
+The delete service recomputes the dry run when the POST starts and then performs two additional D1 protection checks for every target, including one immediately before the R2 delete. Any asset referenced by `event_assets`, a result event, an active/review submission or LINE batch, or active delivery-outbox work is skipped.
+
+Only objects under the candidate's exact `intakes/<intake>/assets/<asset>/` prefix are deleted. A SHA-256 hash index is deleted only when the dry run proved that its stored owner exactly matches the candidate `assetId` and `intakeId`. Batch-level prefixes are not deleted.
+
+This cleanup intentionally does not delete D1 rows and does not use event age as a deletion criterion. Past event data and flyers remain protected just like future events.
