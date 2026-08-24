@@ -11,7 +11,7 @@ import {
 	handleAdminReviewItemList,
 	handleAdminReviewItemDelete,
 } from './routes/admin-events';
-import { handleAdminR2CleanupDryRun } from './routes/admin-r2-cleanup';
+import { handleAdminR2CleanupDelete, handleAdminR2CleanupDryRun } from './routes/admin-r2-cleanup';
 import { handleHealth } from './routes/health';
 import { handleHome } from './routes/home';
 import { handleWebhook, processImageMessage, type ImageProcessingMessage } from './routes/webhook';
@@ -80,6 +80,10 @@ export default {
 
 		if (request.method === 'GET' && url.pathname === '/admin/r2-cleanup') {
 			return handleAdminR2CleanupDryRun(request, env);
+		}
+
+		if (request.method === 'POST' && url.pathname === '/admin/r2-cleanup') {
+			return handleAdminR2CleanupDelete(request, env);
 		}
 
 		if (request.method === 'POST' && url.pathname === '/admin/events/bulk-delete') {
