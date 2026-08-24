@@ -75,7 +75,7 @@ async function protectedAssetIds(db: D1Database): Promise<Set<string>> {
 		 WHERE asset_id IS NOT NULL
 		   AND submission_id IN (
 			SELECT id FROM agent_submissions
-			WHERE status IN ('pending', 'processing', 'needs_review')
+			WHERE status IN ('collecting', 'queued', 'processing', 'needs_review')
 		   )
 		UNION
 		SELECT asset_id FROM line_image_batch_assets
@@ -86,7 +86,7 @@ async function protectedAssetIds(db: D1Database): Promise<Set<string>> {
 		UNION
 		SELECT asset_id FROM line_delivery_outbox
 		 WHERE asset_id IS NOT NULL
-		   AND status NOT IN ('completed', 'failed', 'needs_reconciliation')
+		   AND status NOT IN ('completed', 'unavailable', 'exhausted')
 	`).all<AssetReferenceRow>();
 	return new Set((result.results ?? []).map((row) => row.asset_id));
 }
